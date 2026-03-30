@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://github.com/Omibranch/gitty/blob/master/logo.png" alt="gitty" width="300" />
+<img src="https://files.catbox.moe/sjgj3f.png" alt="gitty" width="1280" height="720" />
 
 # gitty
 

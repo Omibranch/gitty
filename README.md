@@ -26,7 +26,7 @@ Stage. Commit. Push. — All in one command.
 **gitty** is a Windows CLI tool that wraps Git and GitHub CLI into simple, human-friendly commands.  
 The core idea: **you never type `git commit`**. gitty handles staging, committing, and pushing automatically.
 
-`->` means **TO** (push to a branch) &nbsp;|&nbsp; `~` means **FROM** (pull from a branch)
+`%` means **TO** (push to a branch) &nbsp;|&nbsp; `~` means **FROM** (pull from a branch)
 
 ---
 
@@ -62,7 +62,7 @@ gitty install
 | `gitty add repo "name" --public` | Same, but public |
 | `gitty add branch "name"` | Create a local branch without switching to it |
 | `gitty add .` | Stage all changes and auto-commit |
-| `gitty push branch` | Push committed changes to a remote branch (`push->branch` still works) |
+| `gitty push branch` | Push committed changes to a remote branch (`push%branch` also works) |
 | `gitty pull branch` | Safe pull — adds only files missing locally (`pull~branch` still works) |
 | `gitty pull branch --hard` | Overwrite local files from remote (keeps unique local files) |
 | `gitty pull branch --hard-reset` | Mirror remote exactly — destructive, requires confirmation |
@@ -162,10 +162,10 @@ gitty push dev
 gitty push feature/login
 ```
 
-Legacy syntax is still supported:
+Compact syntax is also supported:
 
 ```
-gitty push->main
+gitty push%main
 ```
 
 If the branch doesn't exist on the remote, gitty will offer to create it.
@@ -277,7 +277,7 @@ MIT © [Omibranch](https://github.com/Omibranch)
 **gitty** — CLI-инструмент для Windows, который оборачивает Git и GitHub CLI в простые, человекопонятные команды.  
 Главный принцип: **вы никогда не вводите `git commit`**. gitty берёт стейджинг, коммит и пуш на себя.
 
-`->` означает **ТУДА** (отправить в ветку) &nbsp;|&nbsp; `~` означает **ОТТУДА** (получить из ветки)
+`%` означает **ТУДА** (отправить в ветку) &nbsp;|&nbsp; `~` означает **ОТТУДА** (получить из ветки)
 
 ---
 
@@ -313,7 +313,7 @@ gitty install
 | `gitty add repo "название" --public` | То же, но публичный |
 | `gitty add branch "название"` | Создать локальную ветку без переключения на неё |
 | `gitty add .` | Стейджинг всех изменений и авто-коммит |
-| `gitty push ветка` | Отправить закоммиченные изменения в remote-ветку (`push->ветка` тоже поддерживается) |
+| `gitty push ветка` | Отправить закоммиченные изменения в remote-ветку (`push%ветка` тоже поддерживается) |
 | `gitty pull ветка` | Безопасный pull — добавляет только отсутствующие файлы (`pull~ветка` тоже поддерживается) |
 | `gitty pull ветка --hard` | Перезаписать файлы с remote (уникальные локальные сохраняются) |
 | `gitty pull ветка --hard-reset` | Зеркало remote — деструктивно, требует подтверждения |
@@ -411,10 +411,10 @@ gitty push dev
 gitty push feature/login
 ```
 
-Старый синтаксис тоже поддерживается:
+Короткий синтаксис тоже поддерживается:
 
 ```
-gitty push->main
+gitty push%main
 ```
 
 Если ветки нет на remote, gitty предложит её создать.

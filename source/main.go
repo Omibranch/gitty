@@ -656,7 +656,7 @@ func extractUnbornSubmodulePaths(addOutput string) []string {
 func cmdPush(branch string) {
 	if branch == "" {
 		fail("No target branch specified.")
-		hint("Usage: gitty push <branch>  (or gitty push-><branch>)")
+		hint("Usage: gitty push <branch>  (or gitty push%<branch>)")
 		os.Exit(1)
 	}
 	info(fmt.Sprintf("Pushing to origin/%s...", branch))
@@ -1297,7 +1297,7 @@ func printHelpEN(bold, cyan, green, yellow func(string) string) {
 
 	%s
 	gitty push %s<branch>%s
-		Legacy: gitty push-><branch>
+		Compact: gitty push%%<branch>
 
     Pushes committed changes to the given remote branch.
     Run %s first to stage and commit.
@@ -1312,7 +1312,7 @@ func printHelpEN(bold, cyan, green, yellow func(string) string) {
 
 	%s
 	gitty pull %s<branch>%s [--hard | --hard-reset]
-		Legacy: gitty pull~<branch> [--hard | --hard-reset]
+		Compact: gitty pull~<branch> [--hard | --hard-reset]
 
     %s (default)   Copy only files missing locally. Never overwrites.
 					gitty pull main
@@ -1382,10 +1382,10 @@ func printHelpEN(bold, cyan, green, yellow func(string) string) {
 
 `,
 		bold(cyan("╔══════════════════════════════════════════╗\n║          GITTY  MANUAL  (EN)             ║\n╚══════════════════════════════════════════╝")),
-		green("->"), bold("TO"),
+		green("%"), bold("TO"),
 		yellow("~"), bold("FROM"),
 		bold("OVERVIEW"),
-		green("->"), yellow("~"),
+		green("%"), yellow("~"),
 		bold("gitty install"),
 		bold("gitty auth"),
 		bold("gitty init"),
@@ -1485,7 +1485,7 @@ func printHelpRU(bold, cyan, green, yellow func(string) string) {
 
 	%s
 		gitty push %s<ветка>%s
-		Legacy: gitty push-><ветка>
+		Коротко: gitty push%%<ветка>
 
     Отправляет закоммиченные изменения в указанную ветку на remote.
     Сначала выполните %s для стейджинга и коммита.
@@ -1500,7 +1500,7 @@ func printHelpRU(bold, cyan, green, yellow func(string) string) {
 
 	%s
 		gitty pull %s<ветка>%s [--hard | --hard-reset]
-		Legacy: gitty pull~<ветка> [--hard | --hard-reset]
+		Коротко: gitty pull~<ветка> [--hard | --hard-reset]
 
     %s (без флага)  Копирует только файлы, которых нет локально.
                      Существующие не трогает.
@@ -1572,10 +1572,10 @@ func printHelpRU(bold, cyan, green, yellow func(string) string) {
 
 `,
 		bold(cyan("╔══════════════════════════════════════════╗\n║       РУКОВОДСТВО  GITTY  (RU)           ║\n╚══════════════════════════════════════════╝")),
-		green("->"), bold("ТУДА"),
+		green("%"), bold("ТУДА"),
 		yellow("~"), bold("ОТТУДА"),
 		bold("ОБЗОР"),
-		green("->"), yellow("~"),
+		green("%"), yellow("~"),
 		bold("gitty install"),
 		bold("gitty auth"),
 		bold("gitty init"),
@@ -1698,7 +1698,7 @@ func dispatch(args []string) {
 	case "push":
 		if len(args) < 2 {
 			fail("No target branch specified.")
-			hint("Usage: gitty push <branch>  (or gitty push-><branch>)")
+			hint("Usage: gitty push <branch>  (or gitty push%<branch>)")
 			os.Exit(1)
 		}
 		cmdPush(strings.Trim(args[1], "\"'"))
@@ -1766,7 +1766,7 @@ func dispatch(args []string) {
 		}
 
 	default:
-		rePush  := regexp.MustCompile(`^push->(.+)$`)
+		rePush  := regexp.MustCompile(`^push%(.+)$`)
 		rePull  := regexp.MustCompile(`^pull~(.+)$`)
 		reReset := regexp.MustCompile(`^reset~(.+)$`)
 		if mp := rePush.FindStringSubmatch(args[0]); mp != nil {

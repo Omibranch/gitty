@@ -573,7 +573,7 @@ func ensureInitialCommit() {
 }
 
 // cmdAddDot stages all changes and creates a commit.
-// It does NOT push — use gitty push-><branch> for that.
+// It does NOT push — use gitty push <branch> for that.
 func cmdAddDot() {
 	// If repo is empty (no commits yet), create initial commit
 	_, headErr := runSilent("git", "rev-parse", "HEAD")
@@ -584,9 +584,33 @@ func cmdAddDot() {
 	}
 
 	info("Staging all changes...")
-	if err := run("git", "add", "."); err != nil {
-		fail("git add failed: " + err.Error())
-		os.Exit(1)
+	addOut, addErr := runSilent("git", "add", ".")
+	if addErr != nil {
+		badPaths := extractUnbornSubmodulePaths(addOut)
+		if len(badPaths) > 0 {
+			hint("Detected nested repository path(s) without commits. Retrying while skipping them:")
+			for _, p := range badPaths {
+				hint("  - " + p)
+			}
+
+			retryArgs := []string{"add", "."}
+			for _, p := range badPaths {
+				clean := strings.TrimSuffix(strings.TrimSpace(p), "/")
+				if clean != "" {
+					retryArgs = append(retryArgs, ":(exclude)"+clean)
+				}
+			}
+
+			retryOut, retryErr := runSilent("git", retryArgs...)
+			if retryErr != nil {
+				fail("git add failed: " + retryOut)
+				os.Exit(1)
+			}
+			info("Staging completed with exclusions for nested repo paths.")
+		} else {
+			fail("git add failed: " + addOut)
+			os.Exit(1)
+		}
 	}
 	status, _ := runSilent("git", "status", "--porcelain")
 	if strings.TrimSpace(status) == "" {
@@ -609,12 +633,30 @@ func cmdAddDot() {
 	}
 }
 
+func extractUnbornSubmodulePaths(addOutput string) []string {
+	re := regexp.MustCompile(`'([^']+)' does not have a commit checked out`)
+	seen := map[string]bool{}
+	paths := []string{}
+	for _, m := range re.FindAllStringSubmatch(addOutput, -1) {
+		if len(m) < 2 {
+			continue
+		}
+		p := strings.TrimSpace(m[1])
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		paths = append(paths, p)
+	}
+	return paths
+}
+
 // cmdPush pushes committed changes to the given remote branch.
 // It does NOT stage or commit — use gitty add . for that first.
 func cmdPush(branch string) {
 	if branch == "" {
 		fail("No target branch specified.")
-		hint("Usage: gitty push-><branch>")
+		hint("Usage: gitty push <branch>  (or gitty push-><branch>)")
 		os.Exit(1)
 	}
 	info(fmt.Sprintf("Pushing to origin/%s...", branch))
@@ -791,7 +833,7 @@ done:
 func cmdPull(branch string, flag string) {
 	if branch == "" {
 		fail("No source branch specified.")
-		hint("Usage: gitty pull~<branch> [--hard | --hard-reset]")
+		hint("Usage: gitty pull <branch> [--hard | --hard-reset]  (or gitty pull~<branch>)")
 		os.Exit(1)
 	}
 	switch flag {
@@ -1253,33 +1295,35 @@ func printHelpEN(bold, cyan, green, yellow func(string) string) {
 
     If the repo has no commits yet, an initial commit is created automatically.
 
-  %s
-    gitty push->%s<branch>%s
+	%s
+	gitty push %s<branch>%s
+		Legacy: gitty push-><branch>
 
     Pushes committed changes to the given remote branch.
     Run %s first to stage and commit.
 
     Examples:
-      gitty push->main
-      gitty push->dev
-      gitty push->feature/login
+	gitty push main
+	gitty push dev
+	gitty push feature/login
 
     If the remote branch does not exist, gitty will ask to create it.
-    Chain with add: gitty add . and push->main
+	Chain with add: gitty add . and push main
 
-  %s
-    gitty pull~%s<branch>%s [--hard | --hard-reset]
+	%s
+	gitty pull %s<branch>%s [--hard | --hard-reset]
+		Legacy: gitty pull~<branch> [--hard | --hard-reset]
 
     %s (default)   Copy only files missing locally. Never overwrites.
-                    gitty pull~main
+					gitty pull main
 
     %s             Overwrite files that exist on remote too.
                     Local-only files are kept.
-                    gitty pull~staging --hard
+					gitty pull staging --hard
 
     %s  %s Mirror remote exactly. Deletes local files not on remote.
                     Confirmation required.
-                    gitty pull~main --hard-reset
+					gitty pull main --hard-reset
 
   %s
     gitty reset~%s<branch>%s
@@ -1326,10 +1370,10 @@ func printHelpEN(bold, cyan, green, yellow func(string) string) {
 
 %s
 
-  %s  →   push TO a branch       gitty push->main
-  %s  ~   pull FROM a branch     gitty pull~main
+	%s  push      TO a branch       gitty push main
+	%s  pull      FROM a branch     gitty pull main
   %s  and         chain commands            gitty auth and add repo "name"
-                                            gitty install and auth and add repo "x" and add . and push->main
+											gitty install and auth and add repo "x" and add . and push main
   %s  --public    create a public repo    gitty add repo "name" --public
   %s  --proxy     set proxy               gitty <cmd> --proxy "http://ip:port"
                                           gitty <cmd> --proxy "http://user:pass@ip:port"
@@ -1351,10 +1395,10 @@ func printHelpEN(bold, cyan, green, yellow func(string) string) {
 		dim("[1]"), dim("[2]"), dim("[3]"),
 		bold("gitty add branch"),
 		bold("gitty add ."),
-		bold("gitty push->"),
+		bold("gitty push"),
 		green(""), green(""),
 		bold("gitty add ."),
-		bold("gitty pull~"),
+		bold("gitty pull"),
 		yellow(""), yellow(""),
 		dim("(no flag)"),
 		bold("--hard"),
@@ -1439,35 +1483,37 @@ func printHelpRU(bold, cyan, green, yellow func(string) string) {
 
     Если коммитов ещё нет, начальный коммит создаётся автоматически.
 
-  %s
-    gitty push->%s<ветка>%s
+	%s
+		gitty push %s<ветка>%s
+		Legacy: gitty push-><ветка>
 
     Отправляет закоммиченные изменения в указанную ветку на remote.
     Сначала выполните %s для стейджинга и коммита.
 
     Примеры:
-      gitty push->main
-      gitty push->dev
-      gitty push->feature/login
+	gitty push main
+	gitty push dev
+	gitty push feature/login
 
     Если ветки нет на remote, gitty предложит её создать.
-    Цепочка: gitty add . and push->main
+	Цепочка: gitty add . and push main
 
-  %s
-    gitty pull~%s<ветка>%s [--hard | --hard-reset]
+	%s
+		gitty pull %s<ветка>%s [--hard | --hard-reset]
+		Legacy: gitty pull~<ветка> [--hard | --hard-reset]
 
     %s (без флага)  Копирует только файлы, которых нет локально.
                      Существующие не трогает.
-                     gitty pull~main
+					 gitty pull main
 
     %s              Перезаписывает файлы с remote. Локальные
                      уникальные файлы сохраняются.
-                     gitty pull~staging --hard
+					 gitty pull staging --hard
 
     %s  %s Приводит папку в точное соответствие с remote.
                      Локальные файлы, которых нет на remote, удаляются.
                      Требует подтверждения.
-                     gitty pull~main --hard-reset
+					 gitty pull main --hard-reset
 
   %s
     gitty reset~%s<ветка>%s
@@ -1514,10 +1560,10 @@ func printHelpRU(bold, cyan, green, yellow func(string) string) {
 
 %s
 
-  %s  →   отправить В ветку        gitty push->main
-  %s  ~   получить ИЗ ветки        gitty pull~main
+	%s  push      отправить В ветку   gitty push main
+	%s  pull      получить ИЗ ветки   gitty pull main
   %s  and         цепочка команд            gitty auth and add repo "название"
-                                            gitty install and auth and add repo "x" and add . and push->main
+											gitty install and auth and add repo "x" and add . and push main
   %s  --public    публичный репо           gitty add repo "название" --public
   %s  --proxy     прокси                   gitty <команда> --proxy "http://ip:port"
                                            gitty <команда> --proxy "http://user:pass@ip:port"
@@ -1539,10 +1585,10 @@ func printHelpRU(bold, cyan, green, yellow func(string) string) {
 		dim("[1]"), dim("[2]"), dim("[3]"),
 		bold("gitty add branch"),
 		bold("gitty add ."),
-		bold("gitty push->"),
+		bold("gitty push"),
 		green(""), green(""),
 		bold("gitty add ."),
-		bold("gitty pull~"),
+		bold("gitty pull"),
 		yellow(""), yellow(""),
 		dim("(нет флага)"),
 		bold("--hard"),
@@ -1649,6 +1695,26 @@ func dispatch(args []string) {
 	case "status":
 		cmdStatus()
 
+	case "push":
+		if len(args) < 2 {
+			fail("No target branch specified.")
+			hint("Usage: gitty push <branch>  (or gitty push-><branch>)")
+			os.Exit(1)
+		}
+		cmdPush(strings.Trim(args[1], "\"'"))
+
+	case "pull":
+		if len(args) < 2 {
+			fail("No source branch specified.")
+			hint("Usage: gitty pull <branch> [--hard | --hard-reset]  (or gitty pull~<branch>)")
+			os.Exit(1)
+		}
+		flag := ""
+		if len(args) > 2 {
+			flag = strings.ToLower(strings.TrimSpace(args[2]))
+		}
+		cmdPull(strings.Trim(args[1], "\"'"), flag)
+
 	case "gitignore":
 		cmdGitignore()
 
@@ -1713,6 +1779,16 @@ func dispatch(args []string) {
 			cmdPull(mp[1], flag)
 		} else if mp := reReset.FindStringSubmatch(args[0]); mp != nil {
 			cmdResetBranch(mp[1])
+		} else if args[0] == "push-" {
+			currentBranch, err := runSilent("git", "rev-parse", "--abbrev-ref", "HEAD")
+			if err != nil || strings.TrimSpace(currentBranch) == "" {
+				fail("Could not infer target branch for 'push-'.")
+				hint("Use: gitty push <branch>  (recommended)")
+				os.Exit(1)
+			}
+			hint("It looks like '>' was interpreted by shell redirection. Using current branch instead.")
+			hint("Recommended syntax without special characters: gitty push <branch>")
+			cmdPush(strings.TrimSpace(currentBranch))
 		} else {
 			fail(fmt.Sprintf("Unknown command: '%s'", args[0]))
 			hint("Run 'gitty help' for a full list of commands.")

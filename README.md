@@ -62,10 +62,10 @@ gitty install
 | `gitty add repo "name" --public` | Same, but public |
 | `gitty add branch "name"` | Create a local branch without switching to it |
 | `gitty add .` | Stage all changes and auto-commit |
-| `gitty push->branch` | Push committed changes to a remote branch |
-| `gitty pull~branch` | Safe pull — adds only files missing locally |
-| `gitty pull~branch --hard` | Overwrite local files from remote (keeps unique local files) |
-| `gitty pull~branch --hard-reset` | Mirror remote exactly — destructive, requires confirmation |
+| `gitty push branch` | Push committed changes to a remote branch (`push->branch` still works) |
+| `gitty pull branch` | Safe pull — adds only files missing locally (`pull~branch` still works) |
+| `gitty pull branch --hard` | Overwrite local files from remote (keeps unique local files) |
+| `gitty pull branch --hard-reset` | Mirror remote exactly — destructive, requires confirmation |
 | `gitty reset~branch` | Wipe all content and history from a branch |
 | `gitty status` | Show linked repo, current branch, and GitHub account |
 | `gitty gitignore` | Interactive picker for `.gitignore` templates |
@@ -80,8 +80,8 @@ gitty install
 Run multiple commands in sequence:
 
 ```
-gitty add . and push->main
-gitty install and auth and add repo "my-project" and add . and push->main
+gitty add . and push main
+gitty install and auth and add repo "my-project" and add . and push main
 ```
 
 ---
@@ -144,17 +144,28 @@ Stages all changes and creates a commit:
 
 If there are no commits yet, an initial commit is created automatically.
 
+If git encounters nested repository folders without commits (for example `proxy/`),
+gitty retries automatically and stages everything else, skipping only those paths.
+
 </details>
 
 <details>
-<summary><code>gitty push->branch</code></summary>
+<summary><code>gitty push branch</code></summary>
 
 Pushes committed changes to the specified remote branch. Run `gitty add .` first to stage and commit.
 
+Preferred syntax (works without quotes in cmd/PowerShell):
+
+```
+gitty push main
+gitty push dev
+gitty push feature/login
+```
+
+Legacy syntax is still supported:
+
 ```
 gitty push->main
-gitty push->dev
-gitty push->feature/login
 ```
 
 If the branch doesn't exist on the remote, gitty will offer to create it.
@@ -162,15 +173,17 @@ If the branch doesn't exist on the remote, gitty will offer to create it.
 </details>
 
 <details>
-<summary><code>gitty pull~branch</code></summary>
+<summary><code>gitty pull branch</code></summary>
 
 Three modes:
 
 ```
-gitty pull~main              # Safe: copies only files missing locally
-gitty pull~staging --hard    # Overwrites files from remote; unique local files are kept
-gitty pull~main --hard-reset # DESTRUCTIVE: mirrors remote exactly, deletes local-only files
+gitty pull main              # Safe: copies only files missing locally
+gitty pull staging --hard    # Overwrites files from remote; unique local files are kept
+gitty pull main --hard-reset # DESTRUCTIVE: mirrors remote exactly, deletes local-only files
 ```
+
+Legacy syntax (`pull~branch`) is still supported.
 
 `--hard-reset` requires confirmation.
 
@@ -234,13 +247,13 @@ go build -ldflags="-s -w" -o gitty.exe .
 
 | Flag | Usage |
 |---|---|
-| `->` | Push TO a branch — `gitty push->main` |
-| `~` | Pull FROM a branch — `gitty pull~main` |
-| `and` | Chain commands — `gitty add . and push->main` |
+| `push` | Push TO a branch — `gitty push main` |
+| `pull` | Pull FROM a branch — `gitty pull main` |
+| `and` | Chain commands — `gitty add . and push main` |
 | `--public` | Create a public repo — `gitty add repo "name" --public` |
 | `--proxy` | Use a proxy — `gitty <cmd> --proxy "http://ip:port"` |
-| `--hard` | Overwrite on pull — `gitty pull~main --hard` |
-| `--hard-reset` | Mirror remote on pull — `gitty pull~main --hard-reset` |
+| `--hard` | Overwrite on pull — `gitty pull main --hard` |
+| `--hard-reset` | Mirror remote on pull — `gitty pull main --hard-reset` |
 
 ---
 
@@ -300,10 +313,10 @@ gitty install
 | `gitty add repo "название" --public` | То же, но публичный |
 | `gitty add branch "название"` | Создать локальную ветку без переключения на неё |
 | `gitty add .` | Стейджинг всех изменений и авто-коммит |
-| `gitty push->ветка` | Отправить закоммиченные изменения в remote-ветку |
-| `gitty pull~ветка` | Безопасный pull — добавляет только отсутствующие файлы |
-| `gitty pull~ветка --hard` | Перезаписать файлы с remote (уникальные локальные сохраняются) |
-| `gitty pull~ветка --hard-reset` | Зеркало remote — деструктивно, требует подтверждения |
+| `gitty push ветка` | Отправить закоммиченные изменения в remote-ветку (`push->ветка` тоже поддерживается) |
+| `gitty pull ветка` | Безопасный pull — добавляет только отсутствующие файлы (`pull~ветка` тоже поддерживается) |
+| `gitty pull ветка --hard` | Перезаписать файлы с remote (уникальные локальные сохраняются) |
+| `gitty pull ветка --hard-reset` | Зеркало remote — деструктивно, требует подтверждения |
 | `gitty reset~ветка` | Удалить всё содержимое и историю ветки |
 | `gitty status` | Показать привязанный репо, ветку и аккаунт GitHub |
 | `gitty gitignore` | Интерактивный выбор шаблонов `.gitignore` |
@@ -316,8 +329,8 @@ gitty install
 ### 🔗 Цепочки команд через `and`
 
 ```
-gitty add . and push->main
-gitty install and auth and add repo "мой-проект" and add . and push->main
+gitty add . and push main
+gitty install and auth and add repo "мой-проект" and add . and push main
 ```
 
 ---
@@ -380,17 +393,28 @@ gitty init "https://github.com/user/repo.git"
 
 Если коммитов ещё нет, начальный коммит создаётся автоматически.
 
+Если git встречает вложенные папки-репозитории без коммитов (например `proxy/`),
+gitty автоматически повторяет стейджинг и пропускает только эти пути.
+
 </details>
 
 <details>
-<summary><code>gitty push->ветка</code></summary>
+<summary><code>gitty push ветка</code></summary>
 
 Отправляет закоммиченные изменения в указанную ветку на remote. Сначала выполните `gitty add .` для стейджинга и коммита.
 
+Предпочтительный синтаксис (работает без кавычек в cmd/PowerShell):
+
+```
+gitty push main
+gitty push dev
+gitty push feature/login
+```
+
+Старый синтаксис тоже поддерживается:
+
 ```
 gitty push->main
-gitty push->dev
-gitty push->feature/login
 ```
 
 Если ветки нет на remote, gitty предложит её создать.
@@ -398,15 +422,17 @@ gitty push->feature/login
 </details>
 
 <details>
-<summary><code>gitty pull~ветка</code></summary>
+<summary><code>gitty pull ветка</code></summary>
 
 Три режима:
 
 ```
-gitty pull~main              # Безопасный: копирует только отсутствующие файлы
-gitty pull~staging --hard    # Перезаписывает файлы с remote; уникальные локальные сохраняются
-gitty pull~main --hard-reset # ДЕСТРУКТИВНО: зеркало remote, локальные уникальные файлы удаляются
+gitty pull main              # Безопасный: копирует только отсутствующие файлы
+gitty pull staging --hard    # Перезаписывает файлы с remote; уникальные локальные сохраняются
+gitty pull main --hard-reset # ДЕСТРУКТИВНО: зеркало remote, локальные уникальные файлы удаляются
 ```
+
+Старый синтаксис (`pull~ветка`) тоже поддерживается.
 
 `--hard-reset` требует подтверждения.
 
@@ -470,13 +496,13 @@ go build -ldflags="-s -w" -o gitty.exe .
 
 | Флаг | Использование |
 |---|---|
-| `->` | Отправить В ветку — `gitty push->main` |
-| `~` | Получить ИЗ ветки — `gitty pull~main` |
-| `and` | Цепочка команд — `gitty add . and push->main` |
+| `push` | Отправить В ветку — `gitty push main` |
+| `pull` | Получить ИЗ ветки — `gitty pull main` |
+| `and` | Цепочка команд — `gitty add . and push main` |
 | `--public` | Публичный репо — `gitty add repo "название" --public` |
 | `--proxy` | Прокси — `gitty <команда> --proxy "http://ip:port"` |
-| `--hard` | Перезапись при pull — `gitty pull~main --hard` |
-| `--hard-reset` | Зеркало remote — `gitty pull~main --hard-reset` |
+| `--hard` | Перезапись при pull — `gitty pull main --hard` |
+| `--hard-reset` | Зеркало remote — `gitty pull main --hard-reset` |
 
 ---
 

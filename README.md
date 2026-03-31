@@ -122,7 +122,7 @@ GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../gitty .
 Publication guide:
 - `pkg/OFFICIAL_REPOS.md`
 - `pkg/aur/README.md`
-- `pkg/deb/build.sh`
+- `pkg/build-deb.sh`
 
 ---
 

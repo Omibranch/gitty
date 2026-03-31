@@ -34,8 +34,8 @@ jobs:
 
       - name: Build DEB package
         run: |
-          chmod +x pkg/deb/build.sh
-          ./pkg/deb/build.sh
+          chmod +x pkg/build-deb.sh
+          ./pkg/build-deb.sh
 
       - name: Validate DEB with lintian
         run: |
@@ -58,9 +58,9 @@ jobs:
 
       - name: Verify PKGBUILD and .SRCINFO sync
         run: |
-          cd pkg/aur
-          makepkg --printsrcinfo > /tmp/generated.SRCINFO
-          diff -u .SRCINFO /tmp/generated.SRCINFO
+          useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          su builder -c 'cd "$GITHUB_WORKSPACE/pkg/aur" && makepkg --printsrcinfo > /tmp/generated.SRCINFO && diff -u .SRCINFO /tmp/generated.SRCINFO'
 
       - name: Validate PKGBUILD metadata
         run: |

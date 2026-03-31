@@ -28,7 +28,7 @@ It requires Debian packaging workflow + sponsor/review + policy compliance.
 
 Practical path:
 1. Keep GitHub Releases with Linux binaries.
-2. Build `.deb` with `pkg/deb/build.sh`.
+2. Build `.deb` with `pkg/build-deb.sh`.
 3. Publish your own apt repo (or PPA) for `apt install gitty` from your source.
 4. In parallel, pursue Debian/Ubuntu official inclusion process.
 
@@ -38,8 +38,8 @@ Practical path:
 
 Run on Debian/Ubuntu/Linux:
 ```sh
-chmod +x pkg/deb/build.sh
-./pkg/deb/build.sh
+chmod +x pkg/build-deb.sh
+./pkg/build-deb.sh
 ```
 
 Output:

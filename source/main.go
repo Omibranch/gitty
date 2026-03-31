@@ -654,17 +654,33 @@ func extractUnbornSubmodulePaths(addOutput string) []string {
 // cmdPush pushes committed changes to the given remote branch.
 // It does NOT stage or commit — use gitty add . for that first.
 func cmdPush(branch string) {
+	cmdPushWithFlag(branch, "")
+}
+
+func cmdPushWithFlag(branch, flag string) {
 	if branch == "" {
 		fail("No target branch specified.")
 		hint("Usage: gitty push <branch>  (or gitty push=<branch>)")
 		os.Exit(1)
 	}
+
+	// --force: skip straight to force push
+	if flag == "--force" {
+		info(fmt.Sprintf("Force-pushing to origin/%s...", branch))
+		if err := run("git", "push", "origin", branch, "--force"); err != nil {
+			fail("Force push failed: " + err.Error())
+			os.Exit(1)
+		}
+		success(fmt.Sprintf("Force-pushed to origin/%s.", branch))
+		return
+	}
+
 	info(fmt.Sprintf("Pushing to origin/%s...", branch))
 	pushOut, pushErr := runSilent("git", "push", "origin", branch)
 	if pushErr != nil {
+		// Branch doesn't exist on remote yet
 		if strings.Contains(pushOut, "does not exist") ||
-			strings.Contains(pushOut, "has no upstream") ||
-			strings.Contains(pushErr.Error(), "error") {
+			strings.Contains(pushOut, "has no upstream") {
 			if prompt(fmt.Sprintf("Branch '%s' does not exist on remote. Create and push?", branch)) {
 				if err := run("git", "push", "--set-upstream", "origin", branch); err != nil {
 					fail("Push failed: " + err.Error())
@@ -676,10 +692,99 @@ func cmdPush(branch string) {
 			info("Push cancelled.")
 			return
 		}
-		if strings.Contains(pushOut, "conflict") || strings.Contains(pushOut, "rejected") {
-			fail("Conflict detected. Manual resolution required or use 'gitty pull~" + branch + " --hard' to overwrite.")
-			os.Exit(1)
+
+		// Conflict / rejected — offer interactive options
+		if strings.Contains(pushOut, "conflict") ||
+			strings.Contains(pushOut, "rejected") ||
+			strings.Contains(pushOut, "non-fast-forward") ||
+			strings.Contains(pushOut, "fetch first") {
+
+			fmt.Println()
+			fmt.Printf("  %s[CONFLICT]%s Remote has changes not in your local branch.\n",
+				colorRed, colorReset)
+			fmt.Println()
+
+			opts := []string{"Cancel", "Merge pull + push", "Force push (overwrite remote)"}
+			sel := 0
+
+			fmt.Print("\033[?25l")
+			defer fmt.Print("\033[?25h")
+
+			render := func() {
+				fmt.Print("\r\033[2K")
+				for i, o := range opts {
+					if i == sel {
+						col := colorGreen
+						if o == "Force push (overwrite remote)" {
+							col = colorRed
+						}
+						fmt.Printf("  %s%s[ %s ]%s  ", colorBold, col, o, colorReset)
+					} else {
+						fmt.Printf("  %s%s%s  ", colorDim, o, colorReset)
+					}
+				}
+				fmt.Printf("  %s←→%s  %sEnter%s", colorYellow, colorReset, colorGreen, colorReset)
+			}
+
+			render()
+			choice := 0
+			for {
+				k, err := readKey()
+				if err != nil {
+					break
+				}
+				switch k {
+				case keyLeft:
+					if sel > 0 {
+						sel--
+					}
+				case keyRight:
+					if sel < len(opts)-1 {
+						sel++
+					}
+				case keyEnter:
+					fmt.Println()
+					choice = sel
+					goto pushConflictDone
+				case keyEsc, keyQ:
+					fmt.Println()
+					goto pushConflictDone
+				}
+				render()
+			}
+		pushConflictDone:
+			switch choice {
+			case 0: // Cancel
+				info("Push cancelled.")
+				return
+			case 1: // pull --hard then push
+				info(fmt.Sprintf("Pulling origin/%s (merge)...", branch))
+				if err := run("git", "fetch", "origin", branch); err != nil {
+					fail("Fetch failed: " + err.Error())
+					os.Exit(1)
+				}
+				if err := run("git", "merge", fmt.Sprintf("origin/%s", branch)); err != nil {
+					fail("Merge failed — conflicts need manual resolution.")
+					hint("Resolve conflicts, then run: gitty push " + branch)
+					os.Exit(1)
+				}
+				info(fmt.Sprintf("Pushing merged result to origin/%s...", branch))
+				if err := run("git", "push", "origin", branch); err != nil {
+					fail("Push after merge failed: " + err.Error())
+					os.Exit(1)
+				}
+				success(fmt.Sprintf("Merged and pushed to origin/%s.", branch))
+			case 2: // force push
+				info(fmt.Sprintf("Force-pushing to origin/%s (remote will be overwritten)...", branch))
+				if err := run("git", "push", "origin", branch, "--force"); err != nil {
+					fail("Force push failed: " + err.Error())
+					os.Exit(1)
+				}
+				success(fmt.Sprintf("Force-pushed to origin/%s. Remote now matches your local branch.", branch))
+			}
+			return
 		}
+
 		fail("git push failed: " + pushOut)
 		proxyHint()
 		os.Exit(1)
@@ -2864,25 +2969,31 @@ func dispatch(args []string) {
 			hint("Usage: gitty push <branch>  (or gitty push=<branch>)")
 			os.Exit(1)
 		}
-		// Check for --share flag
+		// Collect flags and branch name
 		share := false
+		forceFlag := ""
 		branch := ""
 		for _, a := range args[1:] {
-			if a == "--share" {
+			switch a {
+			case "--share":
 				share = true
-			} else if branch == "" {
-				branch = strings.Trim(a, "\"'")
+			case "--force":
+				forceFlag = "--force"
+			default:
+				if branch == "" {
+					branch = strings.Trim(a, "\"'")
+				}
 			}
 		}
 		if branch == "" {
 			fail("No target branch specified.")
-			hint("Usage: gitty push <branch> [--share]")
+			hint("Usage: gitty push <branch> [--share] [--force]")
 			os.Exit(1)
 		}
 		if share {
 			cmdPushShare(branch)
 		} else {
-			cmdPush(branch)
+			cmdPushWithFlag(branch, forceFlag)
 		}
 
 	case "pull":

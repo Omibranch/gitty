@@ -63,10 +63,11 @@ jobs:
           su builder -c 'cd "$GITHUB_WORKSPACE/pkg/aur" && makepkg --printsrcinfo > /tmp/generated.SRCINFO && diff -u .SRCINFO /tmp/generated.SRCINFO'
 
       - name: Validate PKGBUILD metadata
+        shell: bash
         run: |
           cd pkg/aur
           bash -n PKGBUILD
-          source PKGBUILD
+          source ./PKGBUILD
           test -n "$pkgname"
           test -n "$pkgver"
           test -n "$source_x86_64"

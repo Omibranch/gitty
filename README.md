@@ -44,7 +44,7 @@ Stage. Commit. Push. All in one command.Stage. Commit. Push. — All in one comm
 
 
 
-### What is gitty?### What is gitty?
+What is gitty?
 
 
 

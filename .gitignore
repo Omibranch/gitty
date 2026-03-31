@@ -1,6 +1,9 @@
-# Build artifacts inside source/ — the root gitty.exe IS tracked
+# Build artifacts inside source/ ï¿½ the root gitty.exe IS tracked
 source/*.exe
 source/vendor/
+dist/
+pkg/out/
+pkg/deb/usr/bin/gitty
 
 # VS Code
 .vscode/

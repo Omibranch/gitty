@@ -113,4 +113,17 @@ GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../gitty .
 
 ---
 
+## Linux package repositories
+
+- **AUR**: package files are ready in `pkg/aur/` (`PKGBUILD`, `.SRCINFO`)
+- **pacman official (Arch extra/community)**: requires Arch maintainer acceptance
+- **apt official (Debian/Ubuntu)**: requires Debian/Ubuntu packaging review + sponsorship
+
+Publication guide:
+- `pkg/OFFICIAL_REPOS.md`
+- `pkg/aur/README.md`
+- `pkg/deb/build.sh`
+
+---
+
 <div align="center">Made with ❤️ in Go</div>

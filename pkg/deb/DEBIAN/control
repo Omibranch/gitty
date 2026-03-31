@@ -1,0 +1,13 @@
+Package: gitty
+Version: 2.0.0
+Section: utils
+Priority: optional
+Architecture: amd64
+Depends: git
+Recommends: gh, xclip | xsel | wl-clipboard
+Maintainer: Omibranch <https://github.com/Omibranch>
+Description: Minimal Git CLI wrapper that speaks human
+ gitty wraps common git operations into short, readable commands.
+ Supports push/pull with conflict resolution, checkpoints, branch
+ management, repo stats, and interactive .gitignore picker.
+Homepage: https://github.com/Omibranch/gitty

@@ -10,12 +10,12 @@ pkgbase = gitty
 	optdepends = xclip: clipboard support (X11)
 	optdepends = xsel: clipboard support (X11 fallback)
 	optdepends = wl-clipboard: clipboard support (Wayland)
-	optdepends = github-cli: full GitHub integration
+	optdepends = github-cli: full GitHub integration (push --share, rename repo, state URL)
 	noextract = gitty-2.0.0-x86_64
 	noextract = gitty-2.0.0-aarch64
 	source_x86_64 = gitty-2.0.0-x86_64::https://github.com/Omibranch/gitty/releases/download/v2.0.0/gitty-linux-amd64
-	source_aarch64 = gitty-2.0.0-aarch64::https://github.com/Omibranch/gitty/releases/download/v2.0.0/gitty-linux-arm64
 	sha256sums_x86_64 = SKIP
+	source_aarch64 = gitty-2.0.0-aarch64::https://github.com/Omibranch/gitty/releases/download/v2.0.0/gitty-linux-arm64
 	sha256sums_aarch64 = SKIP
 
 pkgname = gitty

@@ -19,7 +19,7 @@ import (
 // Version — change this when releasing a new build
 // ─────────────────────────────────────────────
 
-const gittyVersion = "1.0"
+const gittyVersion = "2.0"
 
 // ─────────────────────────────────────────────
 // ANSI colour helpers
@@ -573,7 +573,7 @@ func ensureInitialCommit() {
 }
 
 // cmdAddDot stages all changes and creates a commit.
-// It does NOT push — use gitty push-><branch> for that.
+// It does NOT push — use gitty push <branch> for that.
 func cmdAddDot() {
 	// If repo is empty (no commits yet), create initial commit
 	_, headErr := runSilent("git", "rev-parse", "HEAD")
@@ -584,9 +584,33 @@ func cmdAddDot() {
 	}
 
 	info("Staging all changes...")
-	if err := run("git", "add", "."); err != nil {
-		fail("git add failed: " + err.Error())
-		os.Exit(1)
+	addOut, addErr := runSilent("git", "add", ".")
+	if addErr != nil {
+		badPaths := extractUnbornSubmodulePaths(addOut)
+		if len(badPaths) > 0 {
+			hint("Detected nested repository path(s) without commits. Retrying while skipping them:")
+			for _, p := range badPaths {
+				hint("  - " + p)
+			}
+
+			retryArgs := []string{"add", "."}
+			for _, p := range badPaths {
+				clean := strings.TrimSuffix(strings.TrimSpace(p), "/")
+				if clean != "" {
+					retryArgs = append(retryArgs, ":(exclude)"+clean)
+				}
+			}
+
+			retryOut, retryErr := runSilent("git", retryArgs...)
+			if retryErr != nil {
+				fail("git add failed: " + retryOut)
+				os.Exit(1)
+			}
+			info("Staging completed with exclusions for nested repo paths.")
+		} else {
+			fail("git add failed: " + addOut)
+			os.Exit(1)
+		}
 	}
 	status, _ := runSilent("git", "status", "--porcelain")
 	if strings.TrimSpace(status) == "" {
@@ -609,12 +633,30 @@ func cmdAddDot() {
 	}
 }
 
+func extractUnbornSubmodulePaths(addOutput string) []string {
+	re := regexp.MustCompile(`'([^']+)' does not have a commit checked out`)
+	seen := map[string]bool{}
+	paths := []string{}
+	for _, m := range re.FindAllStringSubmatch(addOutput, -1) {
+		if len(m) < 2 {
+			continue
+		}
+		p := strings.TrimSpace(m[1])
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		paths = append(paths, p)
+	}
+	return paths
+}
+
 // cmdPush pushes committed changes to the given remote branch.
 // It does NOT stage or commit — use gitty add . for that first.
 func cmdPush(branch string) {
 	if branch == "" {
 		fail("No target branch specified.")
-		hint("Usage: gitty push-><branch>")
+		hint("Usage: gitty push <branch>  (or gitty push=<branch>)")
 		os.Exit(1)
 	}
 	info(fmt.Sprintf("Pushing to origin/%s...", branch))
@@ -788,10 +830,574 @@ done:
 	success(fmt.Sprintf("Branch \"%s\" has been completely reset (all content and history removed).", branch))
 }
 
+// cmdMigration replaces ALL files in targetBranch with files from sourceBranch.
+// Syntax: gitty migration <target>=<source>
+// Example: gitty migration main=develop
+func cmdMigration(targetBranch string, sourceBranch string) {
+	targetBranch = strings.TrimSpace(targetBranch)
+	sourceBranch = strings.TrimSpace(sourceBranch)
+
+	if targetBranch == "" || sourceBranch == "" {
+		fail("Both branches are required.")
+		hint("Usage: gitty migration <branch1>=<branch2>")
+		hint("Meaning: replace ALL files in <branch1> with files from <branch2>")
+		os.Exit(1)
+	}
+	if strings.EqualFold(targetBranch, sourceBranch) {
+		fail("Source and target branches must be different.")
+		os.Exit(1)
+	}
+
+	// ── Arrow-key Yes / No confirmation ─────────────────────────────────
+	opts := []string{"No", "Yes"}
+	sel := 0 // default: No (safe)
+
+	fmt.Print("\033[?25l")
+	defer fmt.Print("\033[?25h")
+
+	render := func() {
+		fmt.Print("\r\033[2K")
+		fmt.Printf("  %s[WARN]%s Replace ALL files in %s\"%s\"%s with files from %s\"%s\"%s?   ",
+			colorRed, colorReset,
+			colorBold, targetBranch, colorReset,
+			colorBold, sourceBranch, colorReset)
+		for i, o := range opts {
+			if i == sel {
+				col := colorGreen
+				if o == "Yes" {
+					col = colorRed
+				}
+				fmt.Printf("%s%s[ %s ]%s", colorBold, col, o, colorReset)
+			} else {
+				fmt.Printf("%s  %s  %s", colorDim, o, colorReset)
+			}
+			if i < len(opts)-1 {
+				fmt.Print("  ")
+			}
+		}
+		fmt.Printf("   %s←→%s  %sEnter%s", colorYellow, colorReset, colorGreen, colorReset)
+	}
+
+	render()
+	confirmed := false
+	for {
+		k, err := readKey()
+		if err != nil {
+			break
+		}
+		switch k {
+		case keyLeft:
+			if sel > 0 {
+				sel--
+			}
+		case keyRight:
+			if sel < len(opts)-1 {
+				sel++
+			}
+		case keyEnter:
+			fmt.Println()
+			confirmed = opts[sel] == "Yes"
+			goto done
+		case keyEsc, keyQ:
+			fmt.Println()
+			goto done
+		}
+		render()
+	}
+done:
+	if !confirmed {
+		info("Migration cancelled.")
+		return
+	}
+
+	// Ensure both refs are available locally; fetch if only remote exists.
+	if _, err := runSilent("git", "show-ref", "--verify", "--quiet", "refs/heads/"+targetBranch); err != nil {
+		if remote, _ := runSilent("git", "ls-remote", "--heads", "origin", targetBranch); strings.TrimSpace(remote) != "" {
+			if err := run("git", "fetch", "origin", targetBranch+":"+targetBranch); err != nil {
+				fail("Could not fetch target branch: " + err.Error())
+				os.Exit(1)
+			}
+		} else {
+			fail(fmt.Sprintf("Target branch '%s' does not exist.", targetBranch))
+			os.Exit(1)
+		}
+	}
+
+	sourceRef := sourceBranch
+	if _, err := runSilent("git", "show-ref", "--verify", "--quiet", "refs/heads/"+sourceBranch); err != nil {
+		if remote, _ := runSilent("git", "ls-remote", "--heads", "origin", sourceBranch); strings.TrimSpace(remote) != "" {
+			sourceRef = "origin/" + sourceBranch
+			if err := run("git", "fetch", "origin", sourceBranch); err != nil {
+				fail("Could not fetch source branch: " + err.Error())
+				os.Exit(1)
+			}
+		} else {
+			fail(fmt.Sprintf("Source branch '%s' does not exist.", sourceBranch))
+			os.Exit(1)
+		}
+	}
+
+	info(fmt.Sprintf("Checking out target branch '%s'...", targetBranch))
+	if err := run("git", "checkout", targetBranch); err != nil {
+		fail("Could not checkout target branch: " + err.Error())
+		os.Exit(1)
+	}
+
+	info(fmt.Sprintf("Removing all files from '%s'...", targetBranch))
+	_, _ = runSilent("git", "rm", "-rf", ".")
+	_ = run("git", "clean", "-fd")
+
+	info(fmt.Sprintf("Replacing files with contents from '%s'...", sourceBranch))
+	if err := run("git", "checkout", sourceRef, "--", "."); err != nil {
+		fail("Could not copy files from source branch: " + err.Error())
+		os.Exit(1)
+	}
+
+	if err := run("git", "add", "."); err != nil {
+		fail("git add failed: " + err.Error())
+		os.Exit(1)
+	}
+
+	status, _ := runSilent("git", "status", "--porcelain")
+	if strings.TrimSpace(status) == "" {
+		info("No file differences after migration; nothing to commit.")
+		return
+	}
+
+	msg := fmt.Sprintf("gitty: migrate %s from %s", targetBranch, sourceBranch)
+	if _, err := runSilent("git", "commit", "-m", msg); err != nil {
+		fail("Commit failed during migration.")
+		os.Exit(1)
+	}
+
+	info(fmt.Sprintf("Pushing migrated '%s' to origin...", targetBranch))
+	if err := run("git", "push", "origin", targetBranch); err != nil {
+		if err2 := run("git", "push", "--set-upstream", "origin", targetBranch); err2 != nil {
+			fail("Push failed: " + err2.Error())
+			os.Exit(1)
+		}
+	}
+
+	success(fmt.Sprintf("Migration complete: '%s' now contains files from '%s'.", targetBranch, sourceBranch))
+}
+
+// ─────────────────────────────────────────────
+// Undo
+// ─────────────────────────────────────────────
+
+// cmdUndo reverts the last commit, keeping changes staged (soft reset).
+func cmdUndo() {
+	// Make sure there is at least one commit
+	_, err := runSilent("git", "rev-parse", "HEAD")
+	if err != nil {
+		fail("Nothing to undo — repository has no commits.")
+		os.Exit(1)
+	}
+	// Check if this is the very first commit (no parent)
+	parentOut, parentErr := runSilent("git", "rev-parse", "HEAD~1")
+	if parentErr != nil || strings.TrimSpace(parentOut) == "" {
+		fail("Nothing to undo — this is the first (root) commit.")
+		hint("Use 'gitty reset~<branch>' to wipe the entire branch history.")
+		os.Exit(1)
+	}
+	info("Undoing last commit (changes kept staged)...")
+	if err := run("git", "reset", "HEAD~1", "--soft"); err != nil {
+		fail("git reset failed: " + err.Error())
+		os.Exit(1)
+	}
+	success("Last commit undone. Changes are now staged and ready to re-commit.")
+}
+
+// ─────────────────────────────────────────────
+// Log
+// ─────────────────────────────────────────────
+
+// cmdLog shows a formatted git log with optional time-range flags.
+// Supported flags: --Nh (N hours), --Nday (N days), --Nweek (N weeks), --Nmonth (N months).
+// Default when no flag: last 1 week.
+func cmdLog(flag string) {
+	since := "1 week ago" // default
+	reFlag := regexp.MustCompile(`^--(\d+)(h|day|week|month)s?$`)
+	if flag != "" {
+		if m := reFlag.FindStringSubmatch(strings.ToLower(flag)); m != nil {
+			n := m[1]
+			unit := m[2]
+			switch unit {
+			case "h":
+				since = n + " hours ago"
+			case "day":
+				since = n + " days ago"
+			case "week":
+				since = n + " weeks ago"
+			case "month":
+				since = n + " months ago"
+			}
+		} else {
+			fail(fmt.Sprintf("Unknown log flag '%s'.", flag))
+			hint("Valid flags: --1h  --3day  --2week  --1month  (default: last week)")
+			os.Exit(1)
+		}
+	}
+	info(fmt.Sprintf("Showing commits since: %s", since))
+	fmt.Println()
+	if err := run("git", "log", "--oneline", "--graph", "--decorate",
+		"--since="+since, "--all"); err != nil {
+		fail("git log failed: " + err.Error())
+		os.Exit(1)
+	}
+}
+
+// ─────────────────────────────────────────────
+// Checkpoint / Restore
+// ─────────────────────────────────────────────
+
+// cmdCheckpoint creates a git tag named <name> pointing at the REMOTE tip of <branch>
+// (origin/branch), then pushes the tag to origin. This ensures the checkpoint always
+// reflects what is on GitHub, not local uncommitted or unpushed changes.
+func cmdCheckpoint(name, branch string) {
+	name = strings.Trim(strings.TrimSpace(name), "\"'")
+	branch = strings.Trim(strings.TrimSpace(branch), "\"'")
+	if name == "" {
+		fail("Checkpoint name is required.")
+		hint("Usage: gitty checkpoint \"name\" in <branch>")
+		hint("       gitty checkpoint \"name\"*<branch>")
+		os.Exit(1)
+	}
+	if branch == "" {
+		// default to current branch
+		cur, err := runSilent("git", "rev-parse", "--abbrev-ref", "HEAD")
+		if err != nil || strings.TrimSpace(cur) == "" {
+			fail("Could not determine current branch.")
+			hint("Specify: gitty checkpoint \"name\" in <branch>")
+			os.Exit(1)
+		}
+		branch = strings.TrimSpace(cur)
+		info(fmt.Sprintf("No branch specified — using current branch: %s", branch))
+	}
+
+	// Check that origin remote exists
+	remoteURL, err := runSilent("git", "remote", "get-url", "origin")
+	if err != nil || strings.TrimSpace(remoteURL) == "" {
+		fail("No remote 'origin' found. Checkpoint requires a GitHub remote.")
+		os.Exit(1)
+	}
+
+	// Fetch latest state of the branch from origin
+	info(fmt.Sprintf("Fetching latest state of '%s' from origin...", branch))
+	if err := run("git", "fetch", "origin", branch); err != nil {
+		fail(fmt.Sprintf("Could not fetch branch '%s' from origin: %s", branch, err.Error()))
+		os.Exit(1)
+	}
+
+	// Verify that origin/branch exists after fetch
+	remoteRef := "refs/remotes/origin/" + branch
+	if _, err := runSilent("git", "show-ref", "--verify", "--quiet", remoteRef); err != nil {
+		fail(fmt.Sprintf("Branch '%s' does not exist on origin.", branch))
+		os.Exit(1)
+	}
+
+	// Create tag pointing at origin/branch — NOT local HEAD.
+	// This freezes exactly what GitHub has; local uncommitted/unpushed work is excluded.
+	info(fmt.Sprintf("Creating checkpoint '%s' from origin/%s (GitHub state)...", name, branch))
+	if err := run("git", "tag", name, "origin/"+branch); err != nil {
+		fail(fmt.Sprintf("Failed to create tag '%s': %s", name, err.Error()))
+		hint("Tag may already exist. Use a different name, or delete it first with: git tag -d " + name)
+		os.Exit(1)
+	}
+
+	// Push tag to origin so it lives on GitHub
+	info(fmt.Sprintf("Pushing checkpoint tag '%s' to origin...", name))
+	if err := run("git", "push", "origin", name); err != nil {
+		// tag created locally but not pushed — still useful, warn only
+		hint(fmt.Sprintf("Tag created locally but push failed. To push manually: git push origin %s", name))
+		success(fmt.Sprintf("Checkpoint '%s' saved locally from origin/%s.", name, branch))
+		return
+	}
+	success(fmt.Sprintf("Checkpoint '%s' saved on GitHub from origin/%s. It will never change.", name, branch))
+}
+
+// cmdRestore reverts the working tree to a previously created checkpoint (tag).
+// It checks out the tag in detached HEAD mode. The user can branch off from there.
+func cmdRestore(name string) {
+	name = strings.Trim(name, "\"'")
+	if name == "" {
+		fail("Checkpoint name is required.")
+		hint("Usage: gitty restore \"name\"")
+		os.Exit(1)
+	}
+
+	// Verify the tag exists
+	tagOut, err := runSilent("git", "tag", "-l", name)
+	if err != nil || strings.TrimSpace(tagOut) == "" {
+		// Try fetching from remote
+		info(fmt.Sprintf("Tag '%s' not found locally. Fetching from origin...", name))
+		if err2 := run("git", "fetch", "origin", "refs/tags/"+name+":refs/tags/"+name); err2 != nil {
+			fail(fmt.Sprintf("Checkpoint '%s' not found locally or on remote.", name))
+			hint("Use 'gitty log' to see recent commits and tag names.")
+			os.Exit(1)
+		}
+	}
+
+	// Arrow-key confirmation
+	opts := []string{"No", "Yes"}
+	sel := 0
+
+	fmt.Print("\033[?25l")
+	defer fmt.Print("\033[?25h")
+
+	render := func() {
+		fmt.Print("\r\033[2K")
+		fmt.Printf("  %s[WARN]%s Restore to checkpoint %s\"%s\"%s? Working tree will change.   ",
+			colorRed, colorReset, colorBold, name, colorReset)
+		for i, o := range opts {
+			if i == sel {
+				col := colorGreen
+				if o == "Yes" {
+					col = colorRed
+				}
+				fmt.Printf("%s%s[ %s ]%s", colorBold, col, o, colorReset)
+			} else {
+				fmt.Printf("%s  %s  %s", colorDim, o, colorReset)
+			}
+			if i < len(opts)-1 {
+				fmt.Print("  ")
+			}
+		}
+		fmt.Printf("   %s←→%s  %sEnter%s", colorYellow, colorReset, colorGreen, colorReset)
+	}
+
+	render()
+	confirmed := false
+	for {
+		k, err := readKey()
+		if err != nil {
+			break
+		}
+		switch k {
+		case keyLeft:
+			if sel > 0 {
+				sel--
+			}
+		case keyRight:
+			if sel < len(opts)-1 {
+				sel++
+			}
+		case keyEnter:
+			fmt.Println()
+			confirmed = opts[sel] == "Yes"
+			goto restoreDone
+		case keyEsc, keyQ:
+			fmt.Println()
+			goto restoreDone
+		}
+		render()
+	}
+restoreDone:
+	if !confirmed {
+		info("Restore cancelled.")
+		return
+	}
+
+	info(fmt.Sprintf("Restoring to checkpoint '%s'...", name))
+	if err := run("git", "checkout", name); err != nil {
+		fail("Checkout failed: " + err.Error())
+		os.Exit(1)
+	}
+	success(fmt.Sprintf("Restored to checkpoint '%s'. You are in detached HEAD state.", name))
+	hint("To continue developing: git checkout -b new-branch-name")
+}
+
+// ─────────────────────────────────────────────
+// Push --share
+// ─────────────────────────────────────────────
+
+// cmdPushShare pushes to the given branch and copies the GitHub URL to clipboard.
+func cmdPushShare(branch string) {
+	cmdPush(branch) // performs the actual push (exits on error)
+
+	// Build the GitHub URL
+	remote, err := runSilent("git", "remote", "get-url", "origin")
+	if err != nil || strings.TrimSpace(remote) == "" {
+		hint("Could not determine remote URL. Changes pushed, but link unavailable.")
+		return
+	}
+	remote = strings.TrimSpace(remote)
+	// Normalise to https://github.com/owner/repo/tree/branch
+	remote = strings.TrimSuffix(remote, ".git")
+	if strings.HasPrefix(remote, "git@github.com:") {
+		remote = "https://github.com/" + strings.TrimPrefix(remote, "git@github.com:")
+	}
+	link := remote + "/tree/" + branch
+
+	// Copy to clipboard via PowerShell (Windows)
+	_, clipErr := runSilent("powershell", "-NoProfile", "-Command",
+		fmt.Sprintf("Set-Clipboard -Value '%s'", link))
+
+	if clipErr == nil {
+		success(fmt.Sprintf("Branch link copied to clipboard: %s", link))
+	} else {
+		success(fmt.Sprintf("Branch link: %s", link))
+		hint("(Could not copy to clipboard automatically.)")
+	}
+}
+
+// ─────────────────────────────────────────────
+// Rename
+// ─────────────────────────────────────────────
+
+// cmdRenameBranch renames a branch locally and on the remote.
+func cmdRenameBranch(oldName, newName string) {
+	oldName = strings.Trim(oldName, "\"'")
+	newName = strings.Trim(newName, "\"'")
+	if oldName == "" || newName == "" {
+		fail("Both old and new branch names are required.")
+		hint("Usage: gitty rename branch \"old-name\"=\"new-name\"")
+		os.Exit(1)
+	}
+
+	info(fmt.Sprintf("Renaming branch '%s' → '%s'...", oldName, newName))
+
+	// Rename locally
+	if err := run("git", "branch", "-m", oldName, newName); err != nil {
+		fail("Local branch rename failed: " + err.Error())
+		os.Exit(1)
+	}
+	success(fmt.Sprintf("Local branch renamed: '%s' → '%s'.", oldName, newName))
+
+	// Check if old branch exists on remote
+	remoteCheck, _ := runSilent("git", "ls-remote", "--heads", "origin", oldName)
+	if strings.TrimSpace(remoteCheck) != "" {
+		info(fmt.Sprintf("Updating remote: deleting '%s', pushing '%s'...", oldName, newName))
+		// Delete old remote branch
+		if err := run("git", "push", "origin", ":"+oldName); err != nil {
+			hint(fmt.Sprintf("Could not delete old remote branch '%s'. You may need to do it manually.", oldName))
+		}
+		// Push new name and set upstream
+		if err := run("git", "push", "--set-upstream", "origin", newName); err != nil {
+			fail("Failed to push renamed branch to remote: " + err.Error())
+			os.Exit(1)
+		}
+		success(fmt.Sprintf("Remote branch updated: '%s' replaced with '%s'.", oldName, newName))
+	} else {
+		hint(fmt.Sprintf("Branch '%s' was not on remote — only renamed locally.", oldName))
+	}
+}
+
+// cmdRenameRepo renames a GitHub repository.
+// If oldName is empty, renames the repository linked to the current folder.
+// If both oldName and newName are given, renames that specific repo.
+// Updates local remote origin URL if the renamed repo is the current one.
+func cmdRenameRepo(oldName, newName string) {
+	oldName = strings.Trim(oldName, "\"'")
+	newName = strings.Trim(newName, "\"'")
+	if newName == "" {
+		fail("New repository name is required.")
+		hint("Usage: gitty rename repo \"new-name\"")
+		hint("       gitty rename repo \"old-name\"=\"new-name\"")
+		os.Exit(1)
+	}
+	if !toolExists("gh") {
+		fail("GitHub CLI (gh) is not installed.")
+		hint("Run 'gitty install' to set it up.")
+		os.Exit(1)
+	}
+
+	// Get current remote URL
+	currentRemote, _ := runSilent("git", "remote", "get-url", "origin")
+	currentRemote = strings.TrimSpace(currentRemote)
+
+	repoToRename := oldName
+	isCurrentRepo := false
+
+	if repoToRename == "" {
+		// Rename the current repo
+		if currentRemote == "" {
+			fail("No remote origin found in this folder.")
+			hint("Specify: gitty rename repo \"old-name\"=\"new-name\"")
+			os.Exit(1)
+		}
+		// Extract repo slug from remote URL
+		slug := extractRepoSlug(currentRemote)
+		if slug == "" {
+			fail("Could not parse repository from remote URL: " + currentRemote)
+			os.Exit(1)
+		}
+		repoToRename = slug
+		isCurrentRepo = true
+	} else {
+		// Check if the given old name matches the current remote
+		if currentRemote != "" {
+			slug := extractRepoSlug(currentRemote)
+			// slug may be "owner/repo" or just "repo"
+			if strings.EqualFold(slug, oldName) || strings.HasSuffix(strings.ToLower(slug), "/"+strings.ToLower(oldName)) {
+				isCurrentRepo = true
+			}
+		}
+	}
+
+	info(fmt.Sprintf("Renaming repository '%s' → '%s' on GitHub...", repoToRename, newName))
+	if err := run("gh", "repo", "rename", newName, "--repo", repoToRename, "--yes"); err != nil {
+		fail("gh repo rename failed: " + err.Error())
+		hint("Make sure you are authenticated and have permission to rename the repository.")
+		os.Exit(1)
+	}
+	success(fmt.Sprintf("Repository renamed to '%s' on GitHub.", newName))
+
+	// Update local remote URL if this was the current repo
+	if isCurrentRepo && currentRemote != "" {
+		newRemote := rebuildRemoteURL(currentRemote, newName)
+		if newRemote != "" && newRemote != currentRemote {
+			info(fmt.Sprintf("Updating local remote origin URL to: %s", newRemote))
+			if err := run("git", "remote", "set-url", "origin", newRemote); err != nil {
+				hint("Could not update local remote URL automatically.")
+				hint(fmt.Sprintf("Run manually: git remote set-url origin %s", newRemote))
+			} else {
+				success("Local remote origin URL updated.")
+			}
+		}
+	}
+}
+
+// extractRepoSlug extracts "owner/repo" from a GitHub remote URL.
+func extractRepoSlug(remoteURL string) string {
+	remoteURL = strings.TrimSuffix(remoteURL, ".git")
+	if strings.HasPrefix(remoteURL, "git@github.com:") {
+		return strings.TrimPrefix(remoteURL, "git@github.com:")
+	}
+	if strings.Contains(remoteURL, "github.com/") {
+		parts := strings.SplitAfter(remoteURL, "github.com/")
+		if len(parts) >= 2 {
+			return parts[len(parts)-1]
+		}
+	}
+	return ""
+}
+
+// rebuildRemoteURL replaces the repo name portion in a GitHub remote URL with newName.
+func rebuildRemoteURL(remoteURL, newName string) string {
+	remoteURL = strings.TrimSuffix(remoteURL, ".git")
+	if strings.HasPrefix(remoteURL, "git@github.com:") {
+		slug := strings.TrimPrefix(remoteURL, "git@github.com:")
+		parts := strings.SplitN(slug, "/", 2)
+		if len(parts) == 2 {
+			return "git@github.com:" + parts[0] + "/" + newName + ".git"
+		}
+	}
+	if idx := strings.Index(remoteURL, "github.com/"); idx >= 0 {
+		rest := remoteURL[idx+len("github.com/"):]
+		parts := strings.SplitN(rest, "/", 2)
+		if len(parts) == 2 {
+			base := remoteURL[:idx+len("github.com/")]
+			return base + parts[0] + "/" + newName + ".git"
+		}
+	}
+	return ""
+}
+
 func cmdPull(branch string, flag string) {
 	if branch == "" {
 		fail("No source branch specified.")
-		hint("Usage: gitty pull~<branch> [--hard | --hard-reset]")
+		hint("Usage: gitty pull <branch> [--hard | --hard-reset]  (or gitty pull~<branch>)")
 		os.Exit(1)
 	}
 	switch flag {
@@ -1167,6 +1773,242 @@ func cmdStatus() {
 }
 
 // ─────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────
+
+// cmdState prints statistics about a git repository:
+//   - total commit count across all branches
+//   - list of all branches (local + remote)
+//   - total number of tracked files on the default branch
+//
+// repoArg: optional GitHub URL or "owner/repo" slug. If empty, uses the CWD repo.
+// filter: one of "--branches", "--commits", "--files", or "" (show all).
+func cmdState(repoArg, filter string) {
+	// ── Resolve slug / working dir ─────────────────────────────────────────
+	slug := ""
+	useLocal := true
+	if repoArg != "" {
+		// Accept full URL or owner/repo
+		repoArg = strings.TrimSuffix(repoArg, ".git")
+		if strings.HasPrefix(repoArg, "http") {
+			// https://github.com/owner/repo  or  https://github.com/owner/repo/...
+			if idx := strings.Index(repoArg, "github.com/"); idx >= 0 {
+				rest := repoArg[idx+len("github.com/"):]
+				parts := strings.SplitN(rest, "/", 3)
+				if len(parts) >= 2 {
+					slug = parts[0] + "/" + parts[1]
+				}
+			}
+		} else if strings.Contains(repoArg, "/") {
+			slug = repoArg
+		} else {
+			// bare repo name — try to get owner from gh auth
+			owner, _ := runSilent("gh", "api", "user", "--jq", ".login")
+			if strings.TrimSpace(owner) != "" {
+				slug = strings.TrimSpace(owner) + "/" + repoArg
+			}
+		}
+		if slug == "" {
+			fail("Could not parse GitHub repository from: " + repoArg)
+			hint("Use a full URL: https://github.com/owner/repo")
+			os.Exit(1)
+		}
+		useLocal = false
+	}
+
+	// ── Helper: run gh api against the resolved slug ───────────────────────
+	ghAPI := func(path string) (string, error) {
+		if useLocal {
+			return runSilent("gh", "api", path)
+		}
+		return runSilent("gh", "api", "repos/"+slug+path)
+	}
+
+	fmt.Println()
+
+	// ── Repo name / URL ────────────────────────────────────────────────────
+	if !useLocal {
+		fmt.Printf("  %sRepo:%s  https://github.com/%s\n", colorBold, colorReset, slug)
+	} else {
+		remote, _ := runSilent("git", "remote", "get-url", "origin")
+		remote = strings.TrimSpace(remote)
+		if remote != "" {
+			fmt.Printf("  %sRepo:%s  %s\n", colorBold, colorReset, remote)
+		}
+		// Derive slug from local remote for gh api calls
+		if remote != "" {
+			slug = extractRepoSlug(remote)
+		}
+	}
+
+	showAll := filter == ""
+
+	// ── Commits ────────────────────────────────────────────────────────────
+	if showAll || filter == "--commits" {
+		fmt.Printf("\n  %s── Commits ─────────────────────────────────────%s\n", colorCyan, colorReset)
+		if useLocal {
+			// Count commits across all refs locally
+			out, err := runSilent("git", "rev-list", "--count", "--all")
+			if err != nil || strings.TrimSpace(out) == "" {
+				fmt.Printf("  (no commits yet)\n")
+			} else {
+				fmt.Printf("  Total commits (all branches): %s%s%s\n", colorBold, strings.TrimSpace(out), colorReset)
+			}
+		} else if slug != "" {
+			// Use GitHub API: get default branch, then count commits via compare
+			// Simpler: use git rev-list on cloned data — not available for remote.
+			// Use gh api /repos/{owner}/{repo}/commits?per_page=1 with Link header trick.
+			// The simplest reliable approach: list commits pages.
+			info("Fetching commit count from GitHub API...")
+			// Get default branch first
+			repoInfo, err := ghAPI("")
+			defaultBranch := "main"
+			if err == nil {
+				if db := jsonField(repoInfo, "default_branch"); db != "" {
+					defaultBranch = db
+				}
+			}
+			// Count via contributors stats is unreliable. Use pagination trick:
+			// GET /commits?per_page=1&sha=<branch> → parse Link last page number
+			url := fmt.Sprintf("repos/%s/commits?per_page=1&sha=%s", slug, defaultBranch)
+			out, _, err := runSilentWithHeaders("gh", "api", "--include", url)
+			count := parseLastPage(out)
+			if err != nil || count == 0 {
+				// Fallback: just show most recent N
+				fmt.Printf("  Commits: (exact count unavailable — API rate limit or private repo)\n")
+			} else {
+				fmt.Printf("  Total commits on %s%s%s: %s%d%s\n",
+					colorBold, defaultBranch, colorReset, colorBold, count, colorReset)
+			}
+		}
+	}
+
+	// ── Branches ───────────────────────────────────────────────────────────
+	if showAll || filter == "--branches" {
+		fmt.Printf("\n  %s── Branches ────────────────────────────────────%s\n", colorCyan, colorReset)
+		if useLocal {
+			out, err := runSilent("git", "branch", "-a")
+			if err != nil || strings.TrimSpace(out) == "" {
+				fmt.Printf("  (no branches)\n")
+			} else {
+				lines := strings.Split(strings.TrimSpace(out), "\n")
+				seen := map[string]bool{}
+				for _, l := range lines {
+					l = strings.TrimSpace(l)
+					l = strings.TrimPrefix(l, "* ")
+					l = strings.TrimPrefix(l, "remotes/origin/")
+					l = strings.TrimPrefix(l, "remotes/")
+					if l == "HEAD" || strings.HasSuffix(l, "/HEAD") || l == "" {
+						continue
+					}
+					if seen[l] {
+						continue
+					}
+					seen[l] = true
+					fmt.Printf("    %s%s%s\n", colorGreen, l, colorReset)
+				}
+				fmt.Printf("  Total: %s%d%s branch(es)\n", colorBold, len(seen), colorReset)
+			}
+		} else if slug != "" {
+			out, err := runSilent("gh", "api", fmt.Sprintf("repos/%s/branches?per_page=100", slug), "--jq", ".[].name")
+			if err != nil || strings.TrimSpace(out) == "" {
+				fmt.Printf("  (no branches or inaccessible)\n")
+			} else {
+				lines := strings.Split(strings.TrimSpace(out), "\n")
+				for _, l := range lines {
+					l = strings.TrimSpace(l)
+					if l != "" {
+						fmt.Printf("    %s%s%s\n", colorGreen, l, colorReset)
+					}
+				}
+				count := 0
+				for _, l := range lines {
+					if strings.TrimSpace(l) != "" {
+						count++
+					}
+				}
+				fmt.Printf("  Total: %s%d%s branch(es)\n", colorBold, count, colorReset)
+			}
+		}
+	}
+
+	// ── Files ──────────────────────────────────────────────────────────────
+	if showAll || filter == "--files" {
+		fmt.Printf("\n  %s── Files ───────────────────────────────────────%s\n", colorCyan, colorReset)
+		if useLocal {
+			// Count tracked files on current HEAD
+			out, err := runSilent("git", "ls-files")
+			if err != nil || strings.TrimSpace(out) == "" {
+				fmt.Printf("  (no tracked files)\n")
+			} else {
+				lines := strings.Split(strings.TrimSpace(out), "\n")
+				count := 0
+				for _, l := range lines {
+					if strings.TrimSpace(l) != "" {
+						count++
+					}
+				}
+				fmt.Printf("  Tracked files on current branch: %s%d%s\n", colorBold, count, colorReset)
+			}
+		} else if slug != "" {
+			// Use git trees API on default branch
+			repoInfo, _ := runSilent("gh", "api", fmt.Sprintf("repos/%s", slug))
+			defaultBranch := "main"
+			if db := jsonField(repoInfo, "default_branch"); db != "" {
+				defaultBranch = db
+			}
+			treeOut, err := runSilent("gh", "api",
+				fmt.Sprintf("repos/%s/git/trees/%s?recursive=1", slug, defaultBranch),
+				"--jq", "[.tree[] | select(.type==\"blob\")] | length")
+			if err != nil || strings.TrimSpace(treeOut) == "" {
+				fmt.Printf("  (file count unavailable)\n")
+			} else {
+				fmt.Printf("  Total files on %s%s%s: %s%s%s\n",
+					colorBold, defaultBranch, colorReset,
+					colorBold, strings.TrimSpace(treeOut), colorReset)
+			}
+		}
+	}
+
+	fmt.Println()
+}
+
+// jsonField extracts a string field value from a flat JSON object string.
+// Only works for simple "key":"value" or "key":value patterns.
+func jsonField(jsonStr, key string) string {
+	// Try "key": "value"
+	pattern := `"` + key + `"\s*:\s*"([^"]+)"`
+	re := regexp.MustCompile(pattern)
+	if m := re.FindStringSubmatch(jsonStr); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// runSilentWithHeaders runs a command capturing stdout and stderr combined.
+// Useful for gh api --include which outputs headers then JSON body.
+func runSilentWithHeaders(name string, args ...string) (string, string, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Env = proxyEnv()
+	out, err := cmd.CombinedOutput()
+	s := string(out)
+	return s, s, err
+}
+
+// parseLastPage parses the last page number from a GitHub API --include response.
+// It looks for: Link: <...&page=N>; rel="last"
+func parseLastPage(response string) int {
+	re := regexp.MustCompile(`page=(\d+)>; rel="last"`)
+	m := re.FindStringSubmatch(response)
+	if m == nil {
+		return 0
+	}
+	n := 0
+	fmt.Sscanf(m[1], "%d", &n)
+	return n
+}
+
+// ─────────────────────────────────────────────
 // Help – bilingual with arrow-key language picker
 // ─────────────────────────────────────────────
 
@@ -1193,10 +2035,12 @@ func printHelpEN(bold, cyan, green, yellow func(string) string) {
 	fmt.Printf(`
 %s
 
-  %s  means  %s  (push destination)
-  %s  means  %s  (pull source)
+  %s  means  %s  (push destination / TO)
+  %s  means  %s  (pull source / FROM)
+  %s  means  %s  (branch specifier / IN)
 
 %s
+  Semantic aliases:  "to" = =   "from" = ~   "in" = *
   gitty handles all the boring Git work: staging, committing, pushing.
   Zero-Commit principle — you never type 'git commit' manually.
   You always stay on your own branch. The target branch is specified
@@ -1254,32 +2098,36 @@ func printHelpEN(bold, cyan, green, yellow func(string) string) {
     If the repo has no commits yet, an initial commit is created automatically.
 
   %s
-    gitty push->%s<branch>%s
+    gitty push %s<branch>%s [--share]
+    Compact: gitty push==<branch>
+    Aliases: gitty push to <branch>
 
     Pushes committed changes to the given remote branch.
     Run %s first to stage and commit.
 
     Examples:
-      gitty push->main
-      gitty push->dev
-      gitty push->feature/login
+      gitty push main
+      gitty push to main
+      gitty push dev --share     (push + copy GitHub link to clipboard)
 
     If the remote branch does not exist, gitty will ask to create it.
-    Chain with add: gitty add . and push->main
+    Chain with add: gitty add . and push main
 
   %s
-    gitty pull~%s<branch>%s [--hard | --hard-reset]
+    gitty pull %s<branch>%s [--hard | --hard-reset]
+    Compact: gitty pull~<branch> [--hard | --hard-reset]
+    Aliases: gitty pull from <branch>
 
-    %s (default)   Copy only files missing locally. Never overwrites.
-                    gitty pull~main
+    %s (default)     Copy only files missing locally. Never overwrites.
+                      gitty pull main
 
-    %s             Overwrite files that exist on remote too.
-                    Local-only files are kept.
-                    gitty pull~staging --hard
+    %s               Overwrite files that exist on remote too.
+                      Local-only files are kept.
+                      gitty pull staging --hard
 
-    %s  %s Mirror remote exactly. Deletes local files not on remote.
-                    Confirmation required.
-                    gitty pull~main --hard-reset
+    %s  %s  Mirror remote exactly. Deletes local files not on remote.
+                      Confirmation required.
+                      gitty pull main --hard-reset
 
   %s
     gitty reset~%s<branch>%s
@@ -1289,9 +2137,90 @@ func printHelpEN(bold, cyan, green, yellow func(string) string) {
     If the branch exists on the remote, it is force-pushed.
     Requires arrow-key %s / %s confirmation before executing.
 
-    Example:
+    Examples:
       gitty reset~second
       gitty reset~old-feature
+
+  %s
+    gitty migration <branch1>==<branch2>
+    Aliases: gitty migration <branch1> to <branch2>
+
+    Deletes all files in <branch1> and replaces them with files from <branch2>.
+    Requires arrow-key Yes / No confirmation before executing.
+
+    Example:
+      gitty migration main==develop
+      gitty migration main to develop
+
+  %s
+    gitty undo
+
+    Reverts the last commit, keeping all changes staged for re-commit.
+    Equivalent to: git reset HEAD~1 --soft
+
+  %s
+    gitty log [--Nh | --Nday | --Nweek | --Nmonth]
+
+    Shows a formatted git log with graph and branch decorations.
+    Default when no flag: last 1 week.
+
+    Examples:
+      gitty log
+      gitty log --3day
+      gitty log --2week
+      gitty log --1month
+      gitty log --6h
+
+  %s
+    gitty checkpoint "name" in <branch>
+    gitty checkpoint "name"*<branch>
+    gitty checkpoint "name"         (uses current branch)
+
+    Creates a git tag named "name" on the tip of <branch> and pushes it.
+    Use checkpoints to mark stable versions before experimenting.
+
+    Example:
+      gitty checkpoint "v1-stable" in main
+      gitty checkpoint "before-refactor"
+
+  %s
+    gitty restore "name"
+
+    Reverts the working tree to a previously created checkpoint (tag).
+    Puts repository into detached HEAD state at that tag.
+    Requires arrow-key Yes / No confirmation before executing.
+
+    After restoring, to continue developing:
+      git checkout -b new-branch-name
+
+  %s
+    gitty push <branch> --share
+
+    Pushes the branch and copies its GitHub URL to the clipboard.
+
+    Example:
+      gitty push main --share
+
+  %s
+    gitty rename branch "old-name"=="new-name"
+
+    Renames a branch locally and on the remote.
+    Deletes the old remote branch and pushes the renamed one.
+
+    Example:
+      gitty rename branch "feature-x"=="feature-login"
+
+  %s
+    gitty rename repo "new-name"
+    gitty rename repo "old-name"=="new-name"
+
+    Renames a GitHub repository via gh CLI.
+    If the renamed repo is the current folder's remote, the local URL
+    is updated automatically.
+
+    Examples:
+      gitty rename repo "my-new-name"
+      gitty rename repo "old-project"=="new-project"
 
   %s
     gitty help
@@ -1310,6 +2239,24 @@ func printHelpEN(bold, cyan, green, yellow func(string) string) {
     is linked to the current folder, plus the active branch.
 
   %s
+    gitty state [URL] [--branches | --commits | --files]
+
+    Shows statistics for a repository: total commits, all branches, file count.
+    Without a URL — inspects the repository linked to the current folder.
+    With a URL — fetches stats for any public GitHub repository.
+
+    Flags (show only one section):
+      --commits    total commit count
+      --branches   list of all branches
+      --files      number of tracked files
+
+    Examples:
+      gitty state
+      gitty state https://github.com/torvalds/linux
+      gitty state --branches
+      gitty state https://github.com/owner/repo --commits
+
+  %s
     gitty gitignore
 
     Interactive fuzzy picker for GitHub's official .gitignore templates.
@@ -1326,22 +2273,23 @@ func printHelpEN(bold, cyan, green, yellow func(string) string) {
 
 %s
 
-  %s  →   push TO a branch       gitty push->main
-  %s  ~   pull FROM a branch     gitty pull~main
-  %s  and         chain commands            gitty auth and add repo "name"
-                                            gitty install and auth and add repo "x" and add . and push->main
-  %s  --public    create a public repo    gitty add repo "name" --public
-  %s  --proxy     set proxy               gitty <cmd> --proxy "http://ip:port"
-                                          gitty <cmd> --proxy "http://user:pass@ip:port"
-  %s  --hard      overwrite on pull       gitty pull~main --hard
-  %s  --hard-reset  mirror remote %s   gitty pull~main --hard-reset
+  %s  push/=     push TO a branch          gitty push main
+  %s  pull/~     pull FROM a branch        gitty pull main
+  %s  in/*       branch IN checkpoint      gitty checkpoint "v1" in main
+  %s  and        chain commands            gitty add . and push main
+  %s  --public   create a public repo      gitty add repo "name" --public
+  %s  --share    push + copy link          gitty push main --share
+  %s  --proxy    set proxy                 gitty <cmd> --proxy "http://ip:port"
+  %s  --hard     overwrite on pull         gitty pull main --hard
+  %s  --hard-reset  mirror remote %s    gitty pull main --hard-reset
 
 `,
 		bold(cyan("╔══════════════════════════════════════════╗\n║          GITTY  MANUAL  (EN)             ║\n╚══════════════════════════════════════════╝")),
-		green("->"), bold("TO"),
+		green("="), bold("TO"),
 		yellow("~"), bold("FROM"),
+		cyan("*"), bold("IN"),
 		bold("OVERVIEW"),
-		green("->"), yellow("~"),
+		green("="), yellow("~"),
 		bold("gitty install"),
 		bold("gitty auth"),
 		bold("gitty init"),
@@ -1351,10 +2299,10 @@ func printHelpEN(bold, cyan, green, yellow func(string) string) {
 		dim("[1]"), dim("[2]"), dim("[3]"),
 		bold("gitty add branch"),
 		bold("gitty add ."),
-		bold("gitty push->"),
+		bold("gitty push"),
 		green(""), green(""),
 		bold("gitty add ."),
-		bold("gitty pull~"),
+		bold("gitty pull"),
 		yellow(""), yellow(""),
 		dim("(no flag)"),
 		bold("--hard"),
@@ -1362,14 +2310,23 @@ func printHelpEN(bold, cyan, green, yellow func(string) string) {
 		bold("gitty reset~"),
 		red(""), red(""),
 		red("Yes"), red("No"),
+		bold("gitty migration"),
+		bold("gitty undo"),
+		bold("gitty log"),
+		bold("gitty checkpoint"),
+		bold("gitty restore"),
+		bold("gitty push --share"),
+		bold("gitty rename branch"),
+		bold("gitty rename repo"),
 		bold("gitty help"),
 		bold("gitty clear"),
 		bold("gitty status"),
+		bold("gitty state"),
 		bold("gitty gitignore"),
 		bold("OUTPUT PREFIXES"),
 		green("[SUCCESS]"), red("[ERROR]"), yellow("[HINT]"),
 		bold("FLAGS & SYNTAX"),
-		green(""), yellow(""), dim(""), dim(""), dim(""), dim(""), dim(""), red(""),
+		green(""), yellow(""), cyan(""), dim(""), dim(""), dim(""), dim(""), dim(""), red(""),
 	)
 }
 
@@ -1379,10 +2336,12 @@ func printHelpRU(bold, cyan, green, yellow func(string) string) {
 	fmt.Printf(`
 %s
 
-  %s  означает  %s  (куда отправить)
-  %s  означает  %s  (откуда получить)
+  %s  означает  %s  (куда отправить / TO)
+  %s  означает  %s  (откуда получить / FROM)
+  %s  означает  %s  (в какой ветке / IN)
 
 %s
+  Семантические псевдонимы:  "to" = =   "from" = ~   "in" = *
   gitty берёт рутину Git на себя: стейджинг, коммит, пуш.
   Принцип нулевого коммита — вы никогда не вводите 'git commit'.
   Вы всегда остаётесь на своей ветке. Целевая ветка задаётся
@@ -1440,34 +2399,38 @@ func printHelpRU(bold, cyan, green, yellow func(string) string) {
     Если коммитов ещё нет, начальный коммит создаётся автоматически.
 
   %s
-    gitty push->%s<ветка>%s
+    gitty push %s<ветка>%s [--share]
+    Коротко: gitty push==<ветка>
+    Псевдоним: gitty push to <ветка>
 
     Отправляет закоммиченные изменения в указанную ветку на remote.
     Сначала выполните %s для стейджинга и коммита.
 
     Примеры:
-      gitty push->main
-      gitty push->dev
-      gitty push->feature/login
+      gitty push main
+      gitty push to main
+      gitty push dev --share     (пуш + ссылка на ветку в буфер обмена)
 
     Если ветки нет на remote, gitty предложит её создать.
-    Цепочка: gitty add . and push->main
+    Цепочка: gitty add . and push main
 
   %s
-    gitty pull~%s<ветка>%s [--hard | --hard-reset]
+    gitty pull %s<ветка>%s [--hard | --hard-reset]
+    Коротко: gitty pull~<ветка> [--hard | --hard-reset]
+    Псевдоним: gitty pull from <ветка>
 
-    %s (без флага)  Копирует только файлы, которых нет локально.
-                     Существующие не трогает.
-                     gitty pull~main
+    %s (без флага)   Копирует только файлы, которых нет локально.
+                      Существующие не трогает.
+                      gitty pull main
 
-    %s              Перезаписывает файлы с remote. Локальные
-                     уникальные файлы сохраняются.
-                     gitty pull~staging --hard
+    %s               Перезаписывает файлы с remote.
+                      Уникальные локальные файлы сохраняются.
+                      gitty pull staging --hard
 
-    %s  %s Приводит папку в точное соответствие с remote.
-                     Локальные файлы, которых нет на remote, удаляются.
-                     Требует подтверждения.
-                     gitty pull~main --hard-reset
+    %s  %s  Приводит папку в точное соответствие с remote.
+                      Локальные файлы, которых нет на remote, удаляются.
+                      Требует подтверждения.
+                      gitty pull main --hard-reset
 
   %s
     gitty reset~%s<ветка>%s
@@ -1480,6 +2443,86 @@ func printHelpRU(bold, cyan, green, yellow func(string) string) {
     Примеры:
       gitty reset~second
       gitty reset~old-feature
+
+  %s
+    gitty migration <ветка1>==<ветка2>
+    Псевдоним: gitty migration <ветка1> to <ветка2>
+
+    Удаляет все файлы из <ветка1> и заменяет их файлами из <ветка2>.
+    Перед выполнением требуется подтверждение стрелками: Yes / No.
+
+    Примеры:
+      gitty migration main==develop
+      gitty migration main to develop
+
+  %s
+    gitty undo
+
+    Отменяет последний коммит, оставляя изменения в состоянии staged.
+    Эквивалентно: git reset HEAD~1 --soft
+
+  %s
+    gitty log [--Nh | --Nday | --Nweek | --Nmonth]
+
+    Выводит git-лог с графом и метками веток.
+    По умолчанию (без флага): последняя неделя.
+
+    Примеры:
+      gitty log
+      gitty log --3day
+      gitty log --2week
+      gitty log --1month
+      gitty log --6h
+
+  %s
+    gitty checkpoint "название" in <ветка>
+    gitty checkpoint "название"*<ветка>
+    gitty checkpoint "название"       (использует текущую ветку)
+
+    Создаёт git-тег "название" на кончике <ветки> и пушит его.
+    Используйте чекпоинты для фиксации стабильного состояния.
+
+    Примеры:
+      gitty checkpoint "v1-stable" in main
+      gitty checkpoint "before-refactor"
+
+  %s
+    gitty restore "название"
+
+    Откатывает рабочую директорию к ранее созданному чекпоинту (тегу).
+    Репозиторий переходит в состояние detached HEAD.
+    Перед выполнением требуется подтверждение стрелками: Yes / No.
+
+    После восстановления, чтобы продолжить разработку:
+      git checkout -b новое-название-ветки
+
+  %s
+    gitty push <ветка> --share
+
+    Пушит ветку и копирует ссылку на неё в буфер обмена.
+
+    Пример:
+      gitty push main --share
+
+  %s
+    gitty rename branch "старое"=="новое"
+
+    Переименовывает ветку локально и на remote.
+    Старая ветка на remote удаляется, новая создаётся.
+
+    Пример:
+      gitty rename branch "feature-x"=="feature-login"
+
+  %s
+    gitty rename repo "новое-название"
+    gitty rename repo "старое-название"=="новое-название"
+
+    Переименовывает репозиторий на GitHub через gh CLI.
+    Если переименованный репо — текущий, локальный remote URL обновляется.
+
+    Примеры:
+      gitty rename repo "my-new-name"
+      gitty rename repo "old-project"=="new-project"
 
   %s
     gitty help
@@ -1498,6 +2541,24 @@ func printHelpRU(bold, cyan, green, yellow func(string) string) {
     и текущую ветку в этой папке.
 
   %s
+    gitty state [URL] [--branches | --commits | --files]
+
+    Показывает статистику репозитория: коммиты, ветки, файлы.
+    Без URL — анализирует репозиторий текущей папки.
+    С URL — показывает статистику любого публичного репозитория GitHub.
+
+    Флаги (показать только один раздел):
+      --commits    количество коммитов
+      --branches   список всех веток
+      --files      количество отслеживаемых файлов
+
+    Примеры:
+      gitty state
+      gitty state https://github.com/torvalds/linux
+      gitty state --branches
+      gitty state https://github.com/owner/repo --commits
+
+  %s
     gitty gitignore
 
     Интерактивный поиск по официальным шаблонам .gitignore с GitHub.
@@ -1514,22 +2575,23 @@ func printHelpRU(bold, cyan, green, yellow func(string) string) {
 
 %s
 
-  %s  →   отправить В ветку        gitty push->main
-  %s  ~   получить ИЗ ветки        gitty pull~main
-  %s  and         цепочка команд            gitty auth and add repo "название"
-                                            gitty install and auth and add repo "x" and add . and push->main
-  %s  --public    публичный репо           gitty add repo "название" --public
-  %s  --proxy     прокси                   gitty <команда> --proxy "http://ip:port"
-                                           gitty <команда> --proxy "http://user:pass@ip:port"
-  %s  --hard      перезапись при pull      gitty pull~main --hard
-  %s  --hard-reset  зеркало remote %s  gitty pull~main --hard-reset
+  %s  push/=     отправить В ветку         gitty push main
+  %s  pull/~     получить ИЗ ветки         gitty pull main
+  %s  in/*       ветка В checkpoint        gitty checkpoint "v1" in main
+  %s  and        цепочка команд            gitty add . and push main
+  %s  --public   публичный репо            gitty add repo "название" --public
+  %s  --share    пуш + скопировать ссылку  gitty push main --share
+  %s  --proxy    прокси                    gitty <команда> --proxy "http://ip:port"
+  %s  --hard     перезапись при pull       gitty pull main --hard
+  %s  --hard-reset  зеркало remote %s   gitty pull main --hard-reset
 
 `,
 		bold(cyan("╔══════════════════════════════════════════╗\n║       РУКОВОДСТВО  GITTY  (RU)           ║\n╚══════════════════════════════════════════╝")),
-		green("->"), bold("ТУДА"),
+		green("="), bold("ТУДА"),
 		yellow("~"), bold("ОТТУДА"),
+		cyan("*"), bold("В"),
 		bold("ОБЗОР"),
-		green("->"), yellow("~"),
+		green("="), yellow("~"),
 		bold("gitty install"),
 		bold("gitty auth"),
 		bold("gitty init"),
@@ -1539,10 +2601,10 @@ func printHelpRU(bold, cyan, green, yellow func(string) string) {
 		dim("[1]"), dim("[2]"), dim("[3]"),
 		bold("gitty add branch"),
 		bold("gitty add ."),
-		bold("gitty push->"),
+		bold("gitty push"),
 		green(""), green(""),
 		bold("gitty add ."),
-		bold("gitty pull~"),
+		bold("gitty pull"),
 		yellow(""), yellow(""),
 		dim("(нет флага)"),
 		bold("--hard"),
@@ -1550,14 +2612,23 @@ func printHelpRU(bold, cyan, green, yellow func(string) string) {
 		bold("gitty reset~"),
 		red(""), red(""),
 		red("Yes"), red("No"),
+		bold("gitty migration"),
+		bold("gitty undo"),
+		bold("gitty log"),
+		bold("gitty checkpoint"),
+		bold("gitty restore"),
+		bold("gitty push --share"),
+		bold("gitty rename branch"),
+		bold("gitty rename repo"),
 		bold("gitty help"),
 		bold("gitty clear"),
 		bold("gitty status"),
+		bold("gitty state"),
 		bold("gitty gitignore"),
 		bold("ПРЕФИКСЫ ВЫВОДА"),
 		green("[SUCCESS]"), red("[ERROR]"), yellow("[HINT]"),
 		bold("ФЛАГИ И СИНТАКСИС"),
-		green(""), yellow(""), dim(""), dim(""), dim(""), dim(""), dim(""), red(""),
+		green(""), yellow(""), cyan(""), dim(""), dim(""), dim(""), dim(""), dim(""), red(""),
 	)
 }
 
@@ -1626,8 +2697,48 @@ func main() {
 	}
 
 	for _, seg := range segments {
-		dispatch(seg)
+		dispatch(applyAliases(seg))
 	}
+}
+
+// applyAliases replaces semantic alias tokens and collapses neighbouring tokens
+// into the compact syntax expected by dispatch.
+//
+//	"push" "to" "main"   → ["push=main"]       (= = TO)
+//	"pull" "from" "main" → ["pull~main"]        (~ = FROM)
+//	"checkpoint" "name" "in" "branch" → ["checkpoint", "name", "*branch"]
+//	"migration" "b1" "to" "b2" → ["migration", "b1=b2"]
+func applyAliases(seg []string) []string {
+	// Map lowercase token → operator rune
+	aliases := map[string]string{
+		"to":   "=",
+		"from": "~",
+		"in":   "*",
+	}
+
+	out := make([]string, 0, len(seg))
+	i := 0
+	for i < len(seg) {
+		tok := seg[i]
+		lower := strings.ToLower(tok)
+
+		if op, ok := aliases[lower]; ok {
+			// Alias token — merge with preceding and following tokens if present
+			if len(out) > 0 && i+1 < len(seg) {
+				prev := out[len(out)-1]
+				next := seg[i+1]
+				out[len(out)-1] = prev + op + next
+				i += 2
+				continue
+			}
+			// Edge case: nothing before or after — leave as-is (will trigger usage error)
+			out = append(out, tok)
+		} else {
+			out = append(out, tok)
+		}
+		i++
+	}
+	return out
 }
 
 func dispatch(args []string) {
@@ -1648,6 +2759,158 @@ func dispatch(args []string) {
 
 	case "status":
 		cmdStatus()
+
+	case "state":
+		// gitty state [URL] [--branches | --commits | --files]
+		repoArg := ""
+		filter := ""
+		for _, a := range args[1:] {
+			switch a {
+			case "--branches", "--commits", "--files":
+				filter = a
+			default:
+				if repoArg == "" {
+					repoArg = strings.Trim(a, "\"'")
+				}
+			}
+		}
+		cmdState(repoArg, filter)
+
+	case "undo":
+		cmdUndo()
+
+	case "log":
+		flag := ""
+		if len(args) > 1 {
+			flag = strings.ToLower(strings.TrimSpace(args[1]))
+		}
+		cmdLog(flag)
+
+	case "checkpoint":
+		// Syntax A: gitty checkpoint "name"*branch  (after alias expansion)
+		// Syntax B: gitty checkpoint "name" in branch  → applyAliases → checkpoint "name*branch"
+		// Syntax C: gitty checkpoint "name"  (defaults to current branch)
+		if len(args) < 2 {
+			fail("Checkpoint name is required.")
+			hint("Usage: gitty checkpoint \"name\" in <branch>")
+			os.Exit(1)
+		}
+		nameToken := strings.Trim(args[1], "\"'")
+		branch := ""
+		if strings.Contains(nameToken, "*") {
+			parts := strings.SplitN(nameToken, "*", 2)
+			nameToken = strings.Trim(parts[0], "\"'")
+			branch = strings.TrimSpace(parts[1])
+		} else if len(args) > 2 {
+			branch = strings.Trim(args[2], "\"'")
+		}
+		cmdCheckpoint(nameToken, branch)
+
+	case "restore":
+		if len(args) < 2 {
+			fail("Checkpoint name is required.")
+			hint("Usage: gitty restore \"name\"")
+			os.Exit(1)
+		}
+		cmdRestore(strings.Trim(args[1], "\"'"))
+
+	case "rename":
+		// Subcommands: branch, repo
+		if len(args) < 2 {
+			fail("Incomplete rename command.")
+			hint("Usage: gitty rename branch \"old\"=\"new\"")
+			hint("       gitty rename repo \"new-name\"")
+			hint("       gitty rename repo \"old-name\"=\"new-name\"")
+			os.Exit(1)
+		}
+		switch strings.ToLower(args[1]) {
+		case "branch":
+			if len(args) < 3 {
+				fail("Branch names required.")
+				hint("Usage: gitty rename branch \"old\"=\"new\"")
+				os.Exit(1)
+			}
+			pair := strings.Trim(args[2], "\"'")
+			parts := strings.SplitN(pair, "=", 2)
+			if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+				fail("Invalid branch rename format.")
+				hint("Usage: gitty rename branch \"old-name\"=\"new-name\"")
+				os.Exit(1)
+			}
+			cmdRenameBranch(parts[0], parts[1])
+		case "repo":
+			if len(args) < 3 {
+				fail("New repository name required.")
+				hint("Usage: gitty rename repo \"new-name\"")
+				hint("       gitty rename repo \"old-name\"=\"new-name\"")
+				os.Exit(1)
+			}
+			pair := strings.Trim(args[2], "\"'")
+			if strings.Contains(pair, "=") {
+				parts := strings.SplitN(pair, "=", 2)
+				cmdRenameRepo(parts[0], parts[1])
+			} else {
+				cmdRenameRepo("", pair)
+			}
+		default:
+			fail(fmt.Sprintf("Unknown rename sub-command: '%s'", args[1]))
+			hint("Valid: gitty rename branch ... | gitty rename repo ...")
+			os.Exit(1)
+		}
+
+	case "push":
+		if len(args) < 2 {
+			fail("No target branch specified.")
+			hint("Usage: gitty push <branch>  (or gitty push=<branch>)")
+			os.Exit(1)
+		}
+		// Check for --share flag
+		share := false
+		branch := ""
+		for _, a := range args[1:] {
+			if a == "--share" {
+				share = true
+			} else if branch == "" {
+				branch = strings.Trim(a, "\"'")
+			}
+		}
+		if branch == "" {
+			fail("No target branch specified.")
+			hint("Usage: gitty push <branch> [--share]")
+			os.Exit(1)
+		}
+		if share {
+			cmdPushShare(branch)
+		} else {
+			cmdPush(branch)
+		}
+
+	case "pull":
+		if len(args) < 2 {
+			fail("No source branch specified.")
+			hint("Usage: gitty pull <branch> [--hard | --hard-reset]  (or gitty pull~<branch>)")
+			os.Exit(1)
+		}
+		flag := ""
+		if len(args) > 2 {
+			flag = strings.ToLower(strings.TrimSpace(args[2]))
+		}
+		cmdPull(strings.Trim(args[1], "\"'"), flag)
+
+	case "migration":
+		if len(args) < 2 {
+			fail("Incomplete migration command.")
+			hint("Usage: gitty migration <branch1>%<branch2>")
+			os.Exit(1)
+		}
+		pair := strings.Trim(args[1], "\"'")
+		parts := strings.SplitN(pair, "=", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+			fail("Invalid migration format.")
+			hint("Usage: gitty migration <branch1>=<branch2>")
+			os.Exit(1)
+		}
+		cmdMigration(parts[0], parts[1])
 
 	case "gitignore":
 		cmdGitignore()
@@ -1700,9 +2963,11 @@ func dispatch(args []string) {
 		}
 
 	default:
-		rePush  := regexp.MustCompile(`^push->(.+)$`)
-		rePull  := regexp.MustCompile(`^pull~(.+)$`)
-		reReset := regexp.MustCompile(`^reset~(.+)$`)
+		rePush        := regexp.MustCompile(`^push=(.+)$`)
+		rePull        := regexp.MustCompile(`^pull~(.+)$`)
+		reReset       := regexp.MustCompile(`^reset~(.+)$`)
+		reCheckpoint  := regexp.MustCompile(`^checkpoint(.+)\*(.+)$`)
+		reMigration   := regexp.MustCompile(`^migration(.+)=(.+)$`)
 		if mp := rePush.FindStringSubmatch(args[0]); mp != nil {
 			cmdPush(mp[1])
 		} else if mp := rePull.FindStringSubmatch(args[0]); mp != nil {
@@ -1713,6 +2978,20 @@ func dispatch(args []string) {
 			cmdPull(mp[1], flag)
 		} else if mp := reReset.FindStringSubmatch(args[0]); mp != nil {
 			cmdResetBranch(mp[1])
+		} else if mp := reCheckpoint.FindStringSubmatch(args[0]); mp != nil {
+			cmdCheckpoint(mp[1], mp[2])
+		} else if mp := reMigration.FindStringSubmatch(args[0]); mp != nil {
+			cmdMigration(mp[1], mp[2])
+		} else if args[0] == "push-" {
+			currentBranch, err := runSilent("git", "rev-parse", "--abbrev-ref", "HEAD")
+			if err != nil || strings.TrimSpace(currentBranch) == "" {
+				fail("Could not infer target branch for 'push-'.")
+				hint("Use: gitty push <branch>  (recommended)")
+				os.Exit(1)
+			}
+			hint("It looks like '>' was interpreted by shell redirection. Using current branch instead.")
+			hint("Recommended syntax without special characters: gitty push <branch>")
+			cmdPush(strings.TrimSpace(currentBranch))
 		} else {
 			fail(fmt.Sprintf("Unknown command: '%s'", args[0]))
 			hint("Run 'gitty help' for a full list of commands.")

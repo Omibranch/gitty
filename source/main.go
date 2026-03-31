@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -573,8 +572,10 @@ func ensureInitialCommit() {
 }
 
 // cmdAddDot stages all changes and creates a commit.
+// If customMsg is non-empty it is used as the commit message;
+// otherwise an auto-generated timestamp message is used.
 // It does NOT push — use gitty push <branch> for that.
-func cmdAddDot() {
+func cmdAddDot(customMsg string) {
 	// If repo is empty (no commits yet), create initial commit
 	_, headErr := runSilent("git", "rev-parse", "HEAD")
 	if headErr != nil {
@@ -617,7 +618,10 @@ func cmdAddDot() {
 		info("Nothing to commit – working tree is clean.")
 		return
 	}
-	msg := fmt.Sprintf("gitty auto-sync [%s]", timestamp())
+	msg := customMsg
+	if msg == "" {
+		msg = fmt.Sprintf("gitty auto-sync [%s]", timestamp())
+	}
 	info(fmt.Sprintf("Committing: %s", msg))
 	commitOut, commitErr := runSilent("git", "commit", "-m", msg)
 	if commitErr != nil {
@@ -678,114 +682,9 @@ func cmdPushWithFlag(branch, flag string) {
 	info(fmt.Sprintf("Pushing to origin/%s...", branch))
 	pushOut, pushErr := runSilent("git", "push", "origin", branch)
 	if pushErr != nil {
-		// Branch doesn't exist on remote yet
-		if strings.Contains(pushOut, "does not exist") ||
-			strings.Contains(pushOut, "has no upstream") {
-			if prompt(fmt.Sprintf("Branch '%s' does not exist on remote. Create and push?", branch)) {
-				if err := run("git", "push", "--set-upstream", "origin", branch); err != nil {
-					fail("Push failed: " + err.Error())
-					os.Exit(1)
-				}
-				success(fmt.Sprintf("Branch '%s' created on remote and changes pushed.", branch))
-				return
-			}
-			info("Push cancelled.")
-			return
-		}
-
-		// Conflict / rejected — offer interactive options
-		if strings.Contains(pushOut, "conflict") ||
-			strings.Contains(pushOut, "rejected") ||
-			strings.Contains(pushOut, "non-fast-forward") ||
-			strings.Contains(pushOut, "fetch first") {
-
-			fmt.Println()
-			fmt.Printf("  %s[CONFLICT]%s Remote has changes not in your local branch.\n",
-				colorRed, colorReset)
-			fmt.Println()
-
-			opts := []string{"Cancel", "Merge pull + push", "Force push (overwrite remote)"}
-			sel := 0
-
-			fmt.Print("\033[?25l")
-			defer fmt.Print("\033[?25h")
-
-			render := func() {
-				fmt.Print("\r\033[2K")
-				for i, o := range opts {
-					if i == sel {
-						col := colorGreen
-						if o == "Force push (overwrite remote)" {
-							col = colorRed
-						}
-						fmt.Printf("  %s%s[ %s ]%s  ", colorBold, col, o, colorReset)
-					} else {
-						fmt.Printf("  %s%s%s  ", colorDim, o, colorReset)
-					}
-				}
-				fmt.Printf("  %s←→%s  %sEnter%s", colorYellow, colorReset, colorGreen, colorReset)
-			}
-
-			render()
-			choice := 0
-			for {
-				k, err := readKey()
-				if err != nil {
-					break
-				}
-				switch k {
-				case keyLeft:
-					if sel > 0 {
-						sel--
-					}
-				case keyRight:
-					if sel < len(opts)-1 {
-						sel++
-					}
-				case keyEnter:
-					fmt.Println()
-					choice = sel
-					goto pushConflictDone
-				case keyEsc, keyQ:
-					fmt.Println()
-					goto pushConflictDone
-				}
-				render()
-			}
-		pushConflictDone:
-			switch choice {
-			case 0: // Cancel
-				info("Push cancelled.")
-				return
-			case 1: // pull --hard then push
-				info(fmt.Sprintf("Pulling origin/%s (merge)...", branch))
-				if err := run("git", "fetch", "origin", branch); err != nil {
-					fail("Fetch failed: " + err.Error())
-					os.Exit(1)
-				}
-				if err := run("git", "merge", fmt.Sprintf("origin/%s", branch)); err != nil {
-					fail("Merge failed — conflicts need manual resolution.")
-					hint("Resolve conflicts, then run: gitty push " + branch)
-					os.Exit(1)
-				}
-				info(fmt.Sprintf("Pushing merged result to origin/%s...", branch))
-				if err := run("git", "push", "origin", branch); err != nil {
-					fail("Push after merge failed: " + err.Error())
-					os.Exit(1)
-				}
-				success(fmt.Sprintf("Merged and pushed to origin/%s.", branch))
-			case 2: // force push
-				info(fmt.Sprintf("Force-pushing to origin/%s (remote will be overwritten)...", branch))
-				if err := run("git", "push", "origin", branch, "--force"); err != nil {
-					fail("Force push failed: " + err.Error())
-					os.Exit(1)
-				}
-				success(fmt.Sprintf("Force-pushed to origin/%s. Remote now matches your local branch.", branch))
-			}
-			return
-		}
-
 		fail("git push failed: " + pushOut)
+		hint("For first push of a new branch: git push --set-upstream origin " + branch)
+		hint("To overwrite remote history explicitly: gitty push " + branch + " --force")
 		proxyHint()
 		os.Exit(1)
 	}
@@ -1334,11 +1233,8 @@ func cmdPushShare(branch string) {
 	}
 	link := remote + "/tree/" + branch
 
-	// Copy to clipboard via PowerShell (Windows)
-	_, clipErr := runSilent("powershell", "-NoProfile", "-Command",
-		fmt.Sprintf("Set-Clipboard -Value '%s'", link))
-
-	if clipErr == nil {
+	// Copy to clipboard (platform-specific: see clipboard_windows.go / clipboard_unix.go)
+	if err := copyToClipboard(link); err == nil {
 		success(fmt.Sprintf("Branch link copied to clipboard: %s", link))
 	} else {
 		success(fmt.Sprintf("Branch link: %s", link))
@@ -1575,9 +1471,23 @@ func cmdPull(branch string, flag string) {
 		}
 		success(fmt.Sprintf("Hard-reset complete. Working tree now mirrors origin/%s.", branch))
 
+	case "--commit":
+		// Pull latest from remote (merge), then auto-commit any resulting changes.
+		info(fmt.Sprintf("Pulling origin/%s...", branch))
+		if err := run("git", "fetch", "origin", branch); err != nil {
+			fail("git fetch failed: " + err.Error())
+			proxyHint()
+			os.Exit(1)
+		}
+		if err := run("git", "merge", fmt.Sprintf("origin/%s", branch)); err != nil {
+			fail("Merge failed. Resolve conflicts then commit manually.")
+			os.Exit(1)
+		}
+		cmdAddDot("")
+
 	default:
 		fail(fmt.Sprintf("Unknown flag '%s'.", flag))
-		hint("Valid flags: (none), --hard, --hard-reset")
+		hint("Valid flags: (none), --hard, --hard-reset, --commit")
 		os.Exit(1)
 	}
 }
@@ -2742,9 +2652,7 @@ func printHelpRU(bold, cyan, green, yellow func(string) string) {
 // ─────────────────────────────────────────────
 
 func main() {
-	if runtime.GOOS == "windows" {
-		_ = enableWindowsANSI()
-	}
+	_ = enableWindowsANSI() // enables ANSI on Windows; no-op on Unix
 
 	args := os.Args[1:]
 
@@ -3065,7 +2973,20 @@ func dispatch(args []string) {
 			cmdAddBranch(name)
 
 		case ".":
-			cmdAddDot()
+			// Parse optional --commit "message" flag
+			customMsg := ""
+			for i, a := range args[2:] {
+				if a == "--commit" && i+1 < len(args[2:]) {
+					customMsg = strings.Trim(args[2+i+1], "\"'")
+					break
+				}
+				// Also handle --commit=message syntax
+				if strings.HasPrefix(a, "--commit=") {
+					customMsg = strings.Trim(strings.TrimPrefix(a, "--commit="), "\"'")
+					break
+				}
+			}
+			cmdAddDot(customMsg)
 
 		default:
 			fail(fmt.Sprintf("Unknown 'add' sub-command: '%s'", args[1]))
@@ -3116,9 +3037,6 @@ func dispatch(args []string) {
 // ─────────────────────────────────────────────
 
 func enableWindowsANSI() error {
-	if runtime.GOOS != "windows" {
-		return nil
-	}
 	kernel32, err := loadKernel32()
 	if err != nil {
 		return err

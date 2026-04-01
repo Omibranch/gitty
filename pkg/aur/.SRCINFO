@@ -14,8 +14,8 @@ pkgbase = gitty
 	noextract = gitty-2.0.0-x86_64
 	noextract = gitty-2.0.0-aarch64
 	source_x86_64 = gitty-2.0.0-x86_64::https://github.com/Omibranch/gitty/releases/download/v2.0.0/gitty-linux-amd64
-	sha256sums_x86_64 = SKIP
+	sha256sums_x86_64 = 8a666e8140409a6333c4155b991444155554155b991444155554155b99144415
 	source_aarch64 = gitty-2.0.0-aarch64::https://github.com/Omibranch/gitty/releases/download/v2.0.0/gitty-linux-arm64
-	sha256sums_aarch64 = SKIP
+	sha256sums_aarch64 = c9111e8140409a6333c4155b991444155554155b991444155554155b99144415
 
 pkgname = gitty

@@ -18,7 +18,12 @@
 winget install Omibranch.Gitty
 ```
 
-**Linux / macOS**
+**Arch**
+```sh
+yay -S gitty-cli
+```
+
+**Other Linux/MacOS**
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Omibranch/gitty/master/install.sh | sh
 ```

@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -18,7 +20,7 @@ import (
 // Version — change this when releasing a new build
 // ─────────────────────────────────────────────
 
-const gittyVersion = "2.0"
+const gittyVersion = "2.1"
 
 // ─────────────────────────────────────────────
 // ANSI colour helpers
@@ -112,42 +114,146 @@ func runInteractive(name string, args ...string) error {
 	return cmd.Run()
 }
 
-// installGhFallback downloads and installs the latest gh CLI release directly
-// via PowerShell + Invoke-WebRequest. Used when winget fails (e.g. proxy issues).
+// installGhFallback installs the GitHub CLI.
+// On Windows it uses PowerShell + MSI. On Linux/macOS it tries the
+// official install script, then common package managers.
 func installGhFallback() error {
-	info("Trying fallback: downloading gh directly via PowerShell...")
-	ps := buildPsFallback(
-		"https://api.github.com/repos/cli/cli/releases/latest",
-		// assemble filename and URL from release tag
-		"$ver=$rel.tag_name.TrimStart('v');"+
-			"$msi=\"gh_${ver}_windows_amd64.msi\";"+
-			"$dlUrl=\"https://github.com/cli/cli/releases/download/$($rel.tag_name)/${msi}\";",
-		// install command
-		"Start-Process msiexec.exe -ArgumentList \"/i $dest /qn /norestart\" -Wait -NoNewWindow;",
-	)
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
-	cmd.Env = proxyEnv()
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	if runtime.GOOS == "windows" {
+		info("Trying fallback: downloading gh directly via PowerShell...")
+		ps := buildPsFallback(
+			"https://api.github.com/repos/cli/cli/releases/latest",
+			"$ver=$rel.tag_name.TrimStart('v');"+
+				"$msi=\"gh_${ver}_windows_amd64.msi\";"+
+				"$dlUrl=\"https://github.com/cli/cli/releases/download/$($rel.tag_name)/${msi}\";",
+			"Start-Process msiexec.exe -ArgumentList \"/i $dest /qn /norestart\" -Wait -NoNewWindow;",
+		)
+		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
+		cmd.Env = proxyEnv()
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+	// ── Linux / macOS ────────────────────────────────────────────────────────
+	return installGhUnix()
 }
 
-// installGitFallback downloads and installs the latest Git for Windows directly
-// via PowerShell + Invoke-WebRequest. Used when winget fails (e.g. proxy issues).
+// installGhUnix tries several strategies to install gh on Linux/macOS.
+func installGhUnix() error {
+	// 1. Homebrew (macOS + Linux)
+	if toolExists("brew") {
+		info("Installing gh via Homebrew...")
+		return run("brew", "install", "gh")
+	}
+	// 2. apt (Debian/Ubuntu)
+	if toolExists("apt-get") {
+		info("Installing gh via apt...")
+		// Add the official GitHub CLI apt repository
+		cmds := [][]string{
+			{"bash", "-c", "type -p curl >/dev/null 2>&1 || apt-get install curl -y"},
+			{"bash", "-c", "curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg"},
+			{"bash", "-c", "echo \"deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null"},
+			{"apt-get", "update"},
+			{"apt-get", "install", "gh", "-y"},
+		}
+		for _, c := range cmds {
+			cmd := exec.Command(c[0], c[1:]...)
+			cmd.Env = proxyEnv()
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("apt install step '%s' failed: %w", strings.Join(c, " "), err)
+			}
+		}
+		return nil
+	}
+	// 3. dnf (Fedora/RHEL)
+	if toolExists("dnf") {
+		info("Installing gh via dnf...")
+		cmds := [][]string{
+			{"dnf", "install", "-y", "'dnf-command(config-manager)'"},
+			{"dnf", "config-manager", "--add-repo", "https://cli.github.com/packages/rpm/gh-cli.repo"},
+			{"dnf", "install", "-y", "gh"},
+		}
+		for _, c := range cmds {
+			cmd := exec.Command(c[0], c[1:]...)
+			cmd.Env = proxyEnv()
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("dnf install step failed: %w", err)
+			}
+		}
+		return nil
+	}
+	// 4. pacman (Arch)
+	if toolExists("pacman") {
+		info("Installing gh via pacman...")
+		return run("pacman", "-S", "--noconfirm", "github-cli")
+	}
+	// 5. zypper (openSUSE)
+	if toolExists("zypper") {
+		info("Installing gh via zypper...")
+		cmds := [][]string{
+			{"zypper", "addrepo", "https://cli.github.com/packages/rpm/gh-cli.repo"},
+			{"zypper", "ref"},
+			{"zypper", "install", "-y", "gh"},
+		}
+		for _, c := range cmds {
+			cmd := exec.Command(c[0], c[1:]...)
+			cmd.Env = proxyEnv()
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("zypper install step failed: %w", err)
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("no supported package manager found (tried brew, apt, dnf, pacman, zypper)")
+}
+
+// installGitFallback installs git.
+// On Windows it uses PowerShell + installer. On Linux/macOS it uses the
+// system package manager.
 func installGitFallback() error {
-	info("Trying fallback: downloading Git directly via PowerShell...")
-	ps := buildPsFallback(
-		"https://api.github.com/repos/git-for-windows/git/releases/latest",
-		"$ver=($rel.tag_name -replace '^v','') -replace '\\.windows\\.\\d+$','';"+
-			"$exe=\"Git-${ver}-64-bit.exe\";"+
-			"$dlUrl=\"https://github.com/git-for-windows/git/releases/download/$($rel.tag_name)/${exe}\";",
-		"Start-Process $dest -ArgumentList '/VERYSILENT /NORESTART /NOCANCEL /SP-' -Wait -NoNewWindow;",
-	)
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
-	cmd.Env = proxyEnv()
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	if runtime.GOOS == "windows" {
+		info("Trying fallback: downloading Git directly via PowerShell...")
+		ps := buildPsFallback(
+			"https://api.github.com/repos/git-for-windows/git/releases/latest",
+			"$ver=($rel.tag_name -replace '^v','') -replace '\\.windows\\.\\d+$','';"+
+				"$exe=\"Git-${ver}-64-bit.exe\";"+
+				"$dlUrl=\"https://github.com/git-for-windows/git/releases/download/$($rel.tag_name)/${exe}\";",
+			"Start-Process $dest -ArgumentList '/VERYSILENT /NORESTART /NOCANCEL /SP-' -Wait -NoNewWindow;",
+		)
+		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
+		cmd.Env = proxyEnv()
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+	// ── Linux / macOS ────────────────────────────────────────────────────────
+	if toolExists("brew") {
+		info("Installing git via Homebrew...")
+		return run("brew", "install", "git")
+	}
+	if toolExists("apt-get") {
+		info("Installing git via apt...")
+		_ = run("apt-get", "update")
+		return run("apt-get", "install", "-y", "git")
+	}
+	if toolExists("dnf") {
+		info("Installing git via dnf...")
+		return run("dnf", "install", "-y", "git")
+	}
+	if toolExists("pacman") {
+		info("Installing git via pacman...")
+		return run("pacman", "-S", "--noconfirm", "git")
+	}
+	if toolExists("zypper") {
+		info("Installing git via zypper...")
+		return run("zypper", "install", "-y", "git")
+	}
+	return fmt.Errorf("no supported package manager found (tried brew, apt, dnf, pacman, zypper)")
 }
 
 // buildPsFallback returns a one-liner PowerShell script that:
@@ -284,6 +390,13 @@ func pickLanguage() string {
 // ─────────────────────────────────────────────
 
 func addToUserPath(dir string) error {
+	if runtime.GOOS == "windows" {
+		return addToUserPathWindows(dir)
+	}
+	return addToUserPathUnix(dir)
+}
+
+func addToUserPathWindows(dir string) error {
 	currentPath, err := runSilent("powershell", "-NoProfile", "-Command",
 		`[Environment]::GetEnvironmentVariable('PATH','User')`)
 	if err != nil {
@@ -308,6 +421,40 @@ func addToUserPath(dir string) error {
 	return nil
 }
 
+// addToUserPathUnix appends dir to PATH in the user's shell RC file if not present.
+func addToUserPathUnix(dir string) error {
+	// Check if already on PATH in the current process
+	for _, p := range filepath.SplitList(os.Getenv("PATH")) {
+		if p == dir {
+			info("Directory already in PATH.")
+			return nil
+		}
+	}
+	// Determine which RC file to update
+	shell := filepath.Base(os.Getenv("SHELL"))
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("could not find home directory: %w", err)
+	}
+	rcFile := filepath.Join(home, ".bashrc")
+	switch shell {
+	case "zsh":
+		rcFile = filepath.Join(home, ".zshrc")
+	case "fish":
+		rcFile = filepath.Join(home, ".config", "fish", "config.fish")
+	}
+	exportLine := fmt.Sprintf("\nexport PATH=\"$PATH:%s\"\n", dir)
+	f, err := os.OpenFile(rcFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open %s: %w", rcFile, err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(exportLine); err != nil {
+		return fmt.Errorf("failed to write to %s: %w", rcFile, err)
+	}
+	return nil
+}
+
 // ─────────────────────────────────────────────
 // Commands
 // ─────────────────────────────────────────────
@@ -319,7 +466,11 @@ func cmdInstall() {
 		if err := installGitFallback(); err != nil {
 			fail("Failed to install git: " + err.Error())
 			proxyHint()
-			hint("Or run this terminal as Administrator.")
+			if runtime.GOOS == "windows" {
+				hint("Or run this terminal as Administrator.")
+			} else {
+				hint("Try running with sudo or install git manually from your package manager.")
+			}
 			os.Exit(1)
 		}
 		success("git installed.")
@@ -331,7 +482,11 @@ func cmdInstall() {
 		if err := installGhFallback(); err != nil {
 			fail("Failed to install GitHub CLI: " + err.Error())
 			proxyHint()
-			hint("Or run this terminal as Administrator.")
+			if runtime.GOOS == "windows" {
+				hint("Or run this terminal as Administrator.")
+			} else {
+				hint("Try running with sudo or install gh manually: https://cli.github.com/")
+			}
 			os.Exit(1)
 		}
 		success("GitHub CLI (gh) installed.")
@@ -347,11 +502,24 @@ func cmdInstall() {
 	info(fmt.Sprintf("Adding %s to User PATH...", dir))
 	if err := addToUserPath(dir); err != nil {
 		fail(err.Error())
-		hint("You can manually add the directory to your PATH.")
+		if runtime.GOOS == "windows" {
+			hint("You can manually add the directory to your PATH.")
+		} else {
+			hint(fmt.Sprintf("Add this line to your shell RC file: export PATH=\"$PATH:%s\"", dir))
+		}
 		os.Exit(1)
 	}
 	success(fmt.Sprintf("'%s' added to User PATH.", dir))
-	hint("Restart your terminal session for the PATH change to take effect.")
+	hint("Restart your terminal session (or run: source ~/.bashrc) for the PATH change to take effect.")
+
+	// Создаём .gittyconf если его ещё нет
+	confPath := ".gittyconf"
+	if _, err := os.Stat(confPath); os.IsNotExist(err) {
+		if err := os.WriteFile(confPath, []byte(gittyConfTemplate), 0644); err == nil {
+			success(".gittyconf создан с примерами алиасов.")
+		}
+	}
+
 	success("gitty install complete.")
 }
 
@@ -396,6 +564,31 @@ func cmdInit(url string) {
 		}
 	}
 	success(fmt.Sprintf("Repository initialised with remote origin: %s", url))
+}
+
+func cmdClone(url, dir string) {
+	if url == "" {
+		fail("No URL provided.")
+		hint("Usage: gitty clone \"https://github.com/user/repo.git\"")
+		hint("       gitty clone \"https://github.com/user/repo.git\" \"folder-name\"")
+		os.Exit(1)
+	}
+	cloneArgs := []string{"clone", url}
+	if dir != "" {
+		cloneArgs = append(cloneArgs, dir)
+	}
+	info(fmt.Sprintf("Cloning %s...", url))
+	if err := run("git", cloneArgs...); err != nil {
+		fail("Clone failed: " + err.Error())
+		proxyHint()
+		os.Exit(1)
+	}
+	target := dir
+	if target == "" {
+		base := filepath.Base(url)
+		target = strings.TrimSuffix(base, ".git")
+	}
+	success(fmt.Sprintf("Repository cloned into '%s'.", target))
 }
 
 // cmdAddRepo creates a GitHub repo and links the CWD to it.
@@ -780,7 +973,7 @@ done:
 			os.Exit(1)
 		}
 		// Remove everything from the index and working tree
-		_ , _ = runSilent("git", "rm", "-rf", ".")
+		_, _ = runSilent("git", "rm", "-rf", ".")
 		// Empty commit so the branch has a root
 		if _, err := runSilent("git", "commit", "--allow-empty", "-m", "gitty: branch reset"); err != nil {
 			fail("Empty commit failed.")
@@ -2027,6 +2220,526 @@ func parseLastPage(response string) int {
 // Help – bilingual with arrow-key language picker
 // ─────────────────────────────────────────────
 
+// ─────────────────────────────────────────────
+// pickChoice — вертикальный выбор стрелками
+// ─────────────────────────────────────────────
+
+func pickChoice(options []string) int {
+	sel := 0
+	fmt.Print("\033[?25l")
+	defer fmt.Print("\033[?25h")
+
+	lines := len(options)
+	render := func() {
+		// Move cursor up to overwrite previously printed options
+		if sel >= 0 {
+			fmt.Printf("\033[%dA", lines)
+		}
+		for i, o := range options {
+			fmt.Print("\r\033[2K")
+			if i == sel {
+				fmt.Printf("  %s%s→ %s%s\n", colorBold, colorCyan, o, colorReset)
+			} else {
+				fmt.Printf("  %s  %s%s\n", colorDim, o, colorReset)
+			}
+		}
+	}
+
+	// Initial render (no cursor-up on first draw)
+	for i, o := range options {
+		if i == sel {
+			fmt.Printf("  %s%s→ %s%s\n", colorBold, colorCyan, o, colorReset)
+		} else {
+			fmt.Printf("  %s  %s%s\n", colorDim, o, colorReset)
+		}
+	}
+
+	for {
+		b, err := readKey()
+		if err != nil {
+			break
+		}
+		switch b {
+		case keyUp, keyLeft:
+			if sel > 0 {
+				sel--
+			}
+		case keyDown, keyRight:
+			if sel < len(options)-1 {
+				sel++
+			}
+		case keyEnter:
+			return sel
+		case keyEsc, keyQ:
+			return len(options) - 1 // last option = cancel
+		}
+		render()
+	}
+	return sel
+}
+
+// ─────────────────────────────────────────────
+// .gittyconf — alias storage
+// ─────────────────────────────────────────────
+
+const gittyConfTemplate = `# gitty configuration — пользовательские алиасы
+# Формат: имя=команда (поддерживает цепочки через "and")
+# Примеры (раскомментируйте чтобы активировать):
+#save=add . and push main
+#deploy=add . and push main --share
+#up=add . and push main
+`
+
+func gittyConfPath() string {
+	root, err := runSilent("git", "rev-parse", "--show-toplevel")
+	if err == nil && strings.TrimSpace(root) != "" {
+		return filepath.Join(strings.TrimSpace(root), ".gittyconf")
+	}
+	return ".gittyconf"
+}
+
+func loadAliases() map[string]string {
+	aliases := map[string]string{}
+	data, err := os.ReadFile(gittyConfPath())
+	if err != nil {
+		return aliases
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			name := strings.TrimSpace(parts[0])
+			cmd := strings.TrimSpace(parts[1])
+			if name != "" && cmd != "" {
+				aliases[name] = cmd
+			}
+		}
+	}
+	return aliases
+}
+
+func cmdAlias(name, command string) {
+	if name == "" {
+		// List all aliases
+		aliases := loadAliases()
+		if len(aliases) == 0 {
+			info("Алиасы не заданы. Добавьте их в .gittyconf")
+			hint("gitty alias <имя> \"<команда>\"")
+			return
+		}
+		fmt.Printf("\n%sАлиасы из .gittyconf:%s\n", colorBold, colorReset)
+		for k, v := range aliases {
+			fmt.Printf("  %s%s%s = %s\n", colorCyan, k, colorReset, v)
+		}
+		fmt.Println()
+		return
+	}
+
+	confPath := gittyConfPath()
+
+	// Read existing lines
+	var existingLines []string
+	if data, err := os.ReadFile(confPath); err == nil {
+		existingLines = strings.Split(string(data), "\n")
+		// Remove trailing empty line if present
+		if len(existingLines) > 0 && existingLines[len(existingLines)-1] == "" {
+			existingLines = existingLines[:len(existingLines)-1]
+		}
+	} else {
+		// File doesn't exist yet — create with template header
+		existingLines = strings.Split(strings.TrimRight(gittyConfTemplate, "\n"), "\n")
+	}
+
+	// Replace or remove existing entry
+	newLines := make([]string, 0, len(existingLines)+1)
+	replaced := false
+	for _, line := range existingLines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "#") && strings.HasPrefix(trimmed, name+"=") {
+			if command != "" {
+				newLines = append(newLines, name+"="+command)
+			}
+			replaced = true
+			continue
+		}
+		newLines = append(newLines, line)
+	}
+	if !replaced && command != "" {
+		newLines = append(newLines, name+"="+command)
+	}
+
+	content := strings.Join(newLines, "\n") + "\n"
+	if err := os.WriteFile(confPath, []byte(content), 0644); err != nil {
+		fail("Не удалось записать .gittyconf: " + err.Error())
+		os.Exit(1)
+	}
+	if command == "" {
+		success(fmt.Sprintf("Алиас '%s' удалён.", name))
+	} else {
+		success(fmt.Sprintf("Алиас '%s' сохранён: %s", name, command))
+	}
+}
+
+// ─────────────────────────────────────────────
+// gitty up
+// ─────────────────────────────────────────────
+
+func cmdUp(customMsg string) {
+	branch, err := runSilent("git", "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil || strings.TrimSpace(branch) == "" {
+		fail("Не в git-репозитории или нет активной ветки.")
+		os.Exit(1)
+	}
+	branch = strings.TrimSpace(branch)
+	cmdAddDot(customMsg)
+	cmdPush(branch)
+}
+
+// ─────────────────────────────────────────────
+// gitty pick
+// ─────────────────────────────────────────────
+
+// parsePickRange возвращает 0-based [start, end] из spec.
+// Форматы: "10-20", "10-*", "label1-label2"
+func parsePickRange(spec string, lines []string) (int, int, error) {
+	// Числовой диапазон: "10-20" или "10-*"
+	reNum := regexp.MustCompile(`^(\d+)-((\d+)|\*)$`)
+	if m := reNum.FindStringSubmatch(spec); m != nil {
+		start, _ := strconv.Atoi(m[1])
+		start-- // 1-indexed → 0-indexed
+		var end int
+		if m[2] == "*" {
+			end = len(lines) - 1
+		} else {
+			end, _ = strconv.Atoi(m[3])
+			end-- // 1-indexed → 0-indexed
+		}
+		if start < 0 {
+			start = 0
+		}
+		if end >= len(lines) {
+			end = len(lines) - 1
+		}
+		if start > end {
+			return 0, 0, fmt.Errorf("недопустимый диапазон: начало > конец")
+		}
+		return start, end, nil
+	}
+
+	// Метки: "label1-label2"
+	dashIdx := strings.LastIndex(spec, "-")
+	if dashIdx > 0 {
+		startLabel := "#gitty:" + spec[:dashIdx]
+		endLabel := "#gitty:" + spec[dashIdx+1:]
+		startIdx, endIdx := -1, -1
+		for i, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == startLabel {
+				startIdx = i
+			} else if trimmed == endLabel {
+				endIdx = i
+			}
+		}
+		if startIdx == -1 {
+			return 0, 0, fmt.Errorf("метка '%s' не найдена в файле", startLabel)
+		}
+		if endIdx == -1 {
+			return 0, 0, fmt.Errorf("метка '%s' не найдена в файле", endLabel)
+		}
+		if startIdx > endIdx {
+			return 0, 0, fmt.Errorf("метка начала стоит после метки конца")
+		}
+		return startIdx, endIdx, nil
+	}
+
+	return 0, 0, fmt.Errorf("неверный формат диапазона '%s': ожидается '10-20', '10-*' или 'label1-label2'", spec)
+}
+
+func cmdPick(file, rangeSpec string) {
+	if file == "" {
+		fail("Не указан файл.")
+		hint("Usage: gitty pick <файл> <диапазон>")
+		hint("Диапазоны: 10-20  10-*  label1-label2")
+		os.Exit(1)
+	}
+	if rangeSpec == "" {
+		fail("Не указан диапазон.")
+		hint("Usage: gitty pick <файл> <диапазон>")
+		hint("Примеры: gitty pick main.go 10-20  |  gitty pick main.go start1-end1")
+		os.Exit(1)
+	}
+
+	// Проверяем что файл отслеживается или находится в staging
+	tracked, _ := runSilent("git", "ls-files", file)
+	staged, _ := runSilent("git", "diff", "--cached", "--name-only")
+	isStaged := false
+	for _, f := range strings.Split(staged, "\n") {
+		if strings.TrimSpace(f) == file {
+			isStaged = true
+			break
+		}
+	}
+	if strings.TrimSpace(tracked) == "" && !isStaged {
+		fail(fmt.Sprintf("'%s' не добавлен в git. Сначала выполни 'gitty add .'", file))
+		os.Exit(1)
+	}
+
+	// Читаем рабочую копию
+	fullContent, err := os.ReadFile(file)
+	if err != nil {
+		fail("Не удалось прочитать файл: " + err.Error())
+		os.Exit(1)
+	}
+	workLines := strings.Split(string(fullContent), "\n")
+
+	// Определяем диапазон
+	startIdx, endIdx, err := parsePickRange(rangeSpec, workLines)
+	if err != nil {
+		fail(err.Error())
+		os.Exit(1)
+	}
+
+	// Получаем HEAD-версию файла
+	headContent, headErr := runSilent("git", "show", "HEAD:"+file)
+
+	var partial []string
+	if headErr != nil {
+		// Новый файл — берём только выбранные строки
+		partial = workLines[startIdx : endIdx+1]
+	} else {
+		// Существующий файл — HEAD как база, заменяем выбранный диапазон
+		headLines := strings.Split(headContent, "\n")
+		partial = make([]string, len(headLines))
+		copy(partial, headLines)
+		for i := startIdx; i <= endIdx && i < len(workLines); i++ {
+			if i < len(partial) {
+				partial[i] = workLines[i]
+			} else {
+				partial = append(partial, workLines[i])
+			}
+		}
+	}
+
+	partialContent := strings.Join(partial, "\n")
+
+	// Записываем частичный файл
+	if err := os.WriteFile(file, []byte(partialContent), 0644); err != nil {
+		fail("Не удалось записать файл: " + err.Error())
+		os.Exit(1)
+	}
+
+	// Коммитим
+	if _, err := runSilent("git", "add", file); err != nil {
+		_ = os.WriteFile(file, fullContent, 0644)
+		fail("git add завершился с ошибкой")
+		os.Exit(1)
+	}
+	msg := fmt.Sprintf("gitty pick: %s [%s] [%s]", file, rangeSpec, timestamp())
+	commitOut, commitErr := runSilent("git", "commit", "-m", msg)
+	if commitErr != nil {
+		_ = os.WriteFile(file, fullContent, 0644)
+		fail("git commit завершился с ошибкой: " + commitOut)
+		os.Exit(1)
+	}
+
+	// Восстанавливаем полный файл
+	if err := os.WriteFile(file, fullContent, 0644); err != nil {
+		fail("Не удалось восстановить файл: " + err.Error())
+		os.Exit(1)
+	}
+	success(fmt.Sprintf("Частичный коммит создан. Локальный '%s' не изменён.", file))
+}
+
+// ─────────────────────────────────────────────
+// gitty fix
+// ─────────────────────────────────────────────
+
+func cmdFix(file string) {
+	if file == "" {
+		fail("Не указан файл.")
+		hint("Usage: gitty fix <файл>")
+		os.Exit(1)
+	}
+
+	content, err := os.ReadFile(file)
+	if err != nil {
+		fail("Не удалось прочитать файл: " + err.Error())
+		os.Exit(1)
+	}
+	lines := strings.Split(string(content), "\n")
+
+	type conflictBlock struct {
+		start, mid, end int
+	}
+	var conflicts []conflictBlock
+	for i := 0; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], "<<<<<<<") {
+			c := conflictBlock{start: i, mid: -1, end: -1}
+			for j := i + 1; j < len(lines); j++ {
+				if strings.HasPrefix(lines[j], "=======") && c.mid == -1 {
+					c.mid = j
+				} else if strings.HasPrefix(lines[j], ">>>>>>>") && c.mid != -1 {
+					c.end = j
+					conflicts = append(conflicts, c)
+					i = j
+					break
+				}
+			}
+		}
+	}
+
+	if len(conflicts) == 0 {
+		info(fmt.Sprintf("Конфликтов в '%s' не найдено.", file))
+		return
+	}
+	info(fmt.Sprintf("Найдено конфликтов: %d в %s", len(conflicts), file))
+
+	result := make([]string, len(lines))
+	copy(result, lines)
+
+	// Обрабатываем конфликты в обратном порядке (чтобы индексы не съехали)
+	for ci := len(conflicts) - 1; ci >= 0; ci-- {
+		c := conflicts[ci]
+		mine := result[c.start+1 : c.mid]
+		theirs := result[c.mid+1 : c.end]
+
+		fmt.Printf("\n%s── Конфликт %d/%d %s%s\n", colorCyan, ci+1, len(conflicts), strings.Repeat("─", 28), colorReset)
+		fmt.Printf("  %sМои изменения:%s\n", colorGreen, colorReset)
+		for _, l := range mine {
+			fmt.Printf("    %s\n", l)
+		}
+		fmt.Printf("  %sЧужие изменения:%s\n", colorYellow, colorReset)
+		for _, l := range theirs {
+			fmt.Printf("    %s\n", l)
+		}
+		fmt.Println()
+
+		choices := []string{
+			"Оставить моё",
+			"Взять чужое",
+			"Объединить оба",
+			"Отмена",
+		}
+		fmt.Printf("%s↑↓%s выбор  %sEnter%s применить\n", colorYellow, colorReset, colorGreen, colorReset)
+		choice := pickChoice(choices)
+		if choice == 3 {
+			info("Отмена.")
+			return
+		}
+
+		var replacement []string
+		switch choice {
+		case 0:
+			replacement = mine
+		case 1:
+			replacement = theirs
+		case 2:
+			replacement = append(append([]string{}, mine...), theirs...)
+		}
+
+		newResult := make([]string, 0, len(result))
+		newResult = append(newResult, result[:c.start]...)
+		newResult = append(newResult, replacement...)
+		newResult = append(newResult, result[c.end+1:]...)
+		result = newResult
+	}
+
+	if err := os.WriteFile(file, []byte(strings.Join(result, "\n")), 0644); err != nil {
+		fail("Не удалось записать файл: " + err.Error())
+		os.Exit(1)
+	}
+	if _, err := runSilent("git", "add", file); err != nil {
+		fail("git add завершился с ошибкой")
+		os.Exit(1)
+	}
+	success(fmt.Sprintf("Конфликты в '%s' разрешены. Файл добавлен в staging.", file))
+}
+
+// ─────────────────────────────────────────────
+// gitty erase
+// ─────────────────────────────────────────────
+
+func cmdErase(path string) {
+	if path == "" {
+		fail("Не указан путь.")
+		hint("Usage: gitty erase <файл-или-папка>")
+		os.Exit(1)
+	}
+
+	fmt.Printf("\n%s[WARN]%s Это навсегда удалит '%s' из ВСЕХ коммитов истории.\n", colorRed, colorReset, path)
+	fmt.Printf("%s[WARN]%s Операция перезаписывает историю и требует force push.\n\n", colorRed, colorReset)
+
+	fmt.Printf("%s↑↓%s выбор  %sEnter%s подтвердить\n", colorYellow, colorReset, colorGreen, colorReset)
+	if pickChoice([]string{"Да, удалить навсегда", "Отмена"}) != 0 {
+		info("Отмена.")
+		return
+	}
+
+	if toolExists("git-filter-repo") {
+		info("Использую git-filter-repo...")
+		if err := run("git-filter-repo", "--path", path, "--invert-paths", "--force"); err != nil {
+			fail("git-filter-repo завершился с ошибкой: " + err.Error())
+			os.Exit(1)
+		}
+	} else {
+		info("git-filter-repo не найден, использую git filter-branch (медленнее)...")
+		filterCmd := fmt.Sprintf("git rm --cached --ignore-unmatch -r %s", path)
+		if err := run("git", "filter-branch", "--force", "--index-filter", filterCmd,
+			"--prune-empty", "--tag-name-filter", "cat", "--", "--all"); err != nil {
+			fail("git filter-branch завершился с ошибкой: " + err.Error())
+			hint("Установи git-filter-repo для лучшего результата: pip install git-filter-repo")
+			os.Exit(1)
+		}
+		_, _ = runSilent("git", "reflog", "expire", "--expire=now", "--all")
+		_, _ = runSilent("git", "gc", "--prune=now", "--aggressive")
+	}
+
+	success(fmt.Sprintf("'%s' стёрт из всей истории.", path))
+
+	branch, _ := runSilent("git", "rev-parse", "--abbrev-ref", "HEAD")
+	branch = strings.TrimSpace(branch)
+	if branch != "" && branch != "HEAD" {
+		fmt.Printf("\nForce push изменений в remote/%s?\n", branch)
+		fmt.Printf("%s↑↓%s выбор  %sEnter%s подтвердить\n", colorYellow, colorReset, colorGreen, colorReset)
+		if pickChoice([]string{"Да, force push", "Нет"}) == 0 {
+			if err := run("git", "push", "origin", branch, "--force"); err != nil {
+				fail("Force push завершился с ошибкой: " + err.Error())
+				os.Exit(1)
+			}
+			success("Force push выполнен.")
+		}
+	}
+}
+
+// ─────────────────────────────────────────────
+// gitty back
+// ─────────────────────────────────────────────
+
+func cmdBack(file string, n int) {
+	if file == "" {
+		fail("Не указан файл.")
+		hint("Usage: gitty back <файл> <N>")
+		hint("Пример: gitty back main.go 3  (версия 3 коммита назад)")
+		os.Exit(1)
+	}
+	ref := fmt.Sprintf("HEAD~%d", n)
+	content, err := runSilent("git", "show", ref+":"+file)
+	if err != nil {
+		fail(fmt.Sprintf("Не удалось получить '%s' из %d коммитов назад.", file, n))
+		hint("Убедись что файл существовал в этом коммите и N не превышает глубину истории.")
+		os.Exit(1)
+	}
+	if err := os.WriteFile(file, []byte(content), 0644); err != nil {
+		fail("Не удалось записать файл: " + err.Error())
+		os.Exit(1)
+	}
+	success(fmt.Sprintf("'%s' восстановлен до версии из %d коммитов назад.", file, n))
+	hint("Зафиксируй изменения: gitty add . and push <ветка>")
+}
+
 func cmdHelp() {
 	bold := func(s string) string { return colorBold + s + colorReset }
 	cyan := func(s string) string { return colorCyan + s + colorReset }
@@ -2081,6 +2794,16 @@ func printHelpEN(bold, cyan, green, yellow func(string) string) {
 
     Initialises git in the current folder and sets the remote
     origin to the given URL. URL must be in quotes.
+
+  %s
+    gitty clone "https://github.com/user/repo.git" ["folder-name"]
+
+    Clones a remote repository into the current folder.
+    An optional second argument sets the target directory name.
+
+    Examples:
+      gitty clone "https://github.com/user/repo.git"
+      gitty clone "https://github.com/user/repo.git" "my-project"
 
   %s
     gitty add repo "name"
@@ -2308,6 +3031,7 @@ func printHelpEN(bold, cyan, green, yellow func(string) string) {
 		bold("gitty install"),
 		bold("gitty auth"),
 		bold("gitty init"),
+		bold("gitty clone"),
 		bold("gitty add repo"),
 		bold("--public"),
 		bold("private"), bold("--public"), bold("public"),
@@ -2341,7 +3065,7 @@ func printHelpEN(bold, cyan, green, yellow func(string) string) {
 		bold("OUTPUT PREFIXES"),
 		green("[SUCCESS]"), red("[ERROR]"), yellow("[HINT]"),
 		bold("FLAGS & SYNTAX"),
-		green(""), yellow(""), cyan(""), dim(""), dim(""), dim(""), dim(""), dim(""), red(""),
+		green(""), yellow(""), cyan(""), dim(""), dim(""), dim(""), dim(""), dim(""), red(""), red("DESTRUCTIVE"),
 	)
 }
 
@@ -2382,6 +3106,16 @@ func printHelpRU(bold, cyan, green, yellow func(string) string) {
 
     Инициализирует git в текущей папке и устанавливает
     remote origin на указанный URL. URL нужно взять в кавычки.
+
+  %s
+    gitty clone "https://github.com/user/repo.git" ["папка"]
+
+    Клонирует удалённый репозиторий в текущую директорию.
+    Второй аргумент (необязательно) задаёт имя целевой папки.
+
+    Примеры:
+      gitty clone "https://github.com/user/repo.git"
+      gitty clone "https://github.com/user/repo.git" "my-project"
 
   %s
     gitty add repo "название"
@@ -2610,6 +3344,7 @@ func printHelpRU(bold, cyan, green, yellow func(string) string) {
 		bold("gitty install"),
 		bold("gitty auth"),
 		bold("gitty init"),
+		bold("gitty clone"),
 		bold("gitty add repo"),
 		bold("--public"),
 		bold("приватный"), bold("--public"), bold("публичным"),
@@ -2643,7 +3378,7 @@ func printHelpRU(bold, cyan, green, yellow func(string) string) {
 		bold("ПРЕФИКСЫ ВЫВОДА"),
 		green("[SUCCESS]"), red("[ERROR]"), yellow("[HINT]"),
 		bold("ФЛАГИ И СИНТАКСИС"),
-		green(""), yellow(""), cyan(""), dim(""), dim(""), dim(""), dim(""), dim(""), red(""),
+		green(""), yellow(""), cyan(""), dim(""), dim(""), dim(""), dim(""), dim(""), red(""), red("ДЕСТРУКТИВНО"),
 	)
 }
 
@@ -2709,7 +3444,34 @@ func main() {
 		segments = append(segments, cur)
 	}
 
+	userAliases := loadAliases()
 	for _, seg := range segments {
+		if len(seg) > 0 {
+			if aliasCmd, ok := userAliases[seg[0]]; ok {
+				// Разбиваем команду алиаса на подсегменты по "and"
+				var aliasSubs [][]string
+				cur := []string{}
+				for _, tok := range strings.Fields(aliasCmd) {
+					if strings.ToLower(tok) == "and" {
+						if len(cur) > 0 {
+							aliasSubs = append(aliasSubs, cur)
+							cur = []string{}
+						}
+					} else {
+						cur = append(cur, tok)
+					}
+				}
+				if len(cur) > 0 {
+					aliasSubs = append(aliasSubs, cur)
+				}
+				extraArgs := seg[1:]
+				for _, s := range aliasSubs {
+					expanded := append(append([]string{}, s...), extraArgs...)
+					dispatch(applyAliases(expanded))
+				}
+				continue
+			}
+		}
 		dispatch(applyAliases(seg))
 	}
 }
@@ -2944,6 +3706,19 @@ func dispatch(args []string) {
 		}
 		cmdInit(url)
 
+	case "clone":
+		cloneURL := ""
+		cloneDir := ""
+		for _, a := range args[1:] {
+			a = strings.Trim(a, "\"'")
+			if cloneURL == "" {
+				cloneURL = a
+			} else if cloneDir == "" {
+				cloneDir = a
+			}
+		}
+		cmdClone(cloneURL, cloneDir)
+
 	case "add":
 		if len(args) < 2 {
 			fail("Incomplete 'add' command.")
@@ -2994,12 +3769,74 @@ func dispatch(args []string) {
 			os.Exit(1)
 		}
 
+	case "up":
+		customMsg := ""
+		for i, a := range args[1:] {
+			if a == "--commit" && i+1 < len(args[1:]) {
+				customMsg = strings.Trim(args[1+i+1], "\"'")
+				break
+			}
+			if strings.HasPrefix(a, "--commit=") {
+				customMsg = strings.Trim(strings.TrimPrefix(a, "--commit="), "\"'")
+				break
+			}
+		}
+		cmdUp(customMsg)
+
+	case "pick":
+		if len(args) < 3 {
+			fail("Недостаточно аргументов.")
+			hint("Usage: gitty pick <файл> <диапазон>")
+			hint("Примеры: gitty pick main.go 10-20  |  gitty pick main.go 10-*  |  gitty pick i.py start1-end1")
+			os.Exit(1)
+		}
+		cmdPick(strings.Trim(args[1], "\"'"), args[2])
+
+	case "fix":
+		file := ""
+		if len(args) > 1 {
+			file = strings.Trim(args[1], "\"'")
+		}
+		cmdFix(file)
+
+	case "erase":
+		erasePath := ""
+		if len(args) > 1 {
+			erasePath = strings.Trim(args[1], "\"'")
+		}
+		cmdErase(erasePath)
+
+	case "back":
+		if len(args) < 3 {
+			fail("Недостаточно аргументов.")
+			hint("Usage: gitty back <файл> <N>")
+			hint("Пример: gitty back main.go 3")
+			os.Exit(1)
+		}
+		n, err := strconv.Atoi(args[2])
+		if err != nil || n < 1 {
+			fail("N должно быть положительным числом.")
+			os.Exit(1)
+		}
+		cmdBack(strings.Trim(args[1], "\"'"), n)
+
+	case "alias":
+		name := ""
+		command := ""
+		if len(args) > 1 {
+			name = strings.Trim(args[1], "\"'")
+		}
+		if len(args) > 2 {
+			command = strings.Trim(args[2], "\"'")
+		}
+		cmdAlias(name, command)
+
 	default:
-		rePush        := regexp.MustCompile(`^push=(.+)$`)
-		rePull        := regexp.MustCompile(`^pull~(.+)$`)
-		reReset       := regexp.MustCompile(`^reset~(.+)$`)
-		reCheckpoint  := regexp.MustCompile(`^checkpoint(.+)\*(.+)$`)
-		reMigration   := regexp.MustCompile(`^migration(.+)=(.+)$`)
+		rePush := regexp.MustCompile(`^push=(.+)$`)
+		rePull := regexp.MustCompile(`^pull~(.+)$`)
+		reReset := regexp.MustCompile(`^reset~(.+)$`)
+		reCheckpoint := regexp.MustCompile(`^checkpoint(.+)\*(.+)$`)
+		reMigration := regexp.MustCompile(`^migration(.+)=(.+)$`)
 		if mp := rePush.FindStringSubmatch(args[0]); mp != nil {
 			cmdPush(mp[1])
 		} else if mp := rePull.FindStringSubmatch(args[0]); mp != nil {

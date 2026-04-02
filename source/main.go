@@ -20,7 +20,7 @@ import (
 // Version — change this when releasing a new build
 // ─────────────────────────────────────────────
 
-const gittyVersion = "2.1"
+const gittyVersion = "2.2"
 
 // ─────────────────────────────────────────────
 // ANSI colour helpers

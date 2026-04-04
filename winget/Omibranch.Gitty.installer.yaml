@@ -11,7 +11,7 @@ InstallModes:
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/Omibranch/gitty/releases/download/v2.2.0/gitty.exe
-    InstallerSha256: E1CD87E6C06E81C1AC38D7E8AA084CED717B2AF07F1B118824F46BCAE6EA811A
+    InstallerSha256: AFD4044BE13C63E85C3395798748A98D99AC4116FDCF4D31DB40880F12F40853
     InstallerType: portable
     ProductCode: Omibranch.Gitty
 Commands:

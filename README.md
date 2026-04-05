@@ -38,6 +38,12 @@ yay -S gitty-cli
 ```
 > Binary installs as `gitty`. The package name is `gitty-cli` because `gitty` was already taken in AUR by a different project.
 
+**macOS / Linux — Homebrew**
+```sh
+brew tap Omibranch/gitty
+brew install gitty
+```
+
 **Linux / macOS — install script**
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Omibranch/gitty/master/install.sh | sh
@@ -244,6 +250,12 @@ winget install Omibranch.Gitty
 yay -S gitty-cli
 ```
 > Бинарник устанавливается как `gitty`. Пакет называется `gitty-cli`, потому что имя `gitty` в AUR уже занято другим проектом.
+
+**macOS / Linux — Homebrew**
+```sh
+brew tap Omibranch/gitty
+brew install gitty
+```
 
 **Linux / macOS — скрипт установки**
 ```sh

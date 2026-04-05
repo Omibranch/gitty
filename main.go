@@ -1237,7 +1237,7 @@ func cmdLog(flag string) {
 	}
 	info(fmt.Sprintf("Showing commits since: %s", since))
 	fmt.Println()
-	if err := run("git", "log", "--oneline", "--graph", "--decorate",
+	if err := run("git", "--no-pager", "log", "--oneline", "--graph", "--decorate",
 		"--since="+since, "--all"); err != nil {
 		fail("git log failed: " + err.Error())
 		os.Exit(1)

@@ -20,7 +20,7 @@ if [ -f "$ROOT_DIR/dist/gitty-linux-amd64" ]; then
   cp "$ROOT_DIR/dist/gitty-linux-amd64" "$PKG_DIR/usr/bin/gitty"
 else
   echo "[INFO] dist/gitty-linux-amd64 not found, building from source..."
-  (cd "$ROOT_DIR/source" && GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "$PKG_DIR/usr/bin/gitty" .)
+  (cd "$ROOT_DIR" && GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "$PKG_DIR/usr/bin/gitty" .)
 fi
 
 chmod 0755 "$PKG_DIR/usr/bin/gitty"

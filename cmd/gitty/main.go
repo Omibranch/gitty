@@ -3927,9 +3927,29 @@ func dispatch(args []string) {
 		cmdAlias(name, command)
 
 	case "roast":
+		if len(args) > 1 && args[1] == "lang" {
+			if len(args) < 3 {
+				fmt.Printf("Current roast language: %s\n", roastLoadLang())
+				return
+			}
+			lang := strings.ToLower(strings.TrimSpace(args[2]))
+			if lang != "en" && lang != "ru" {
+				fail("Unsupported roast language.")
+				hint("Available: en, ru")
+				os.Exit(1)
+			}
+			if err := roastSaveConfig("GITTY_ROAST_LANG", lang); err != nil {
+				fail("Could not save language setting.")
+				os.Exit(1)
+			}
+			fmt.Printf("Roast language set to %s\n", lang)
+			return
+		}
+
 		n := 5
 		repo := "."
 		model := "Qwen/Qwen2.5-72B-Instruct"
+		lang := roastLoadLang()
 		for i := 1; i < len(args); i++ {
 			switch args[i] {
 			case "--last":
@@ -3949,9 +3969,19 @@ func dispatch(args []string) {
 					model = args[i+1]
 					i++
 				}
+			case "--lang":
+				if i+1 < len(args) {
+					lang = strings.ToLower(strings.TrimSpace(args[i+1]))
+					i++
+				}
 			}
 		}
-		cmdRoast(repo, n, model)
+		if lang != "en" && lang != "ru" {
+			fail("Unsupported roast language.")
+			hint("Available: --lang en | --lang ru")
+			os.Exit(1)
+		}
+		cmdRoast(repo, n, model, lang)
 
 	default:
 		rePush := regexp.MustCompile(`^push=(.+)$`)
@@ -3997,30 +4027,100 @@ func dispatch(args []string) {
 
 const roastHFAPIURL = "https://router.huggingface.co/v1/chat/completions"
 
-var roastFallbacks = []string{
-	"Congratulations: your commit history reads like someone learning to type while blindfolded. 'fix stuff', 'asdf', 'final FINAL v3' — a masterclass in communicating nothing.",
-	"Your commits are a timeline of panic. Brief, cryptic, and mostly apologies. 'oops', 'forgot this', 'WHY' — truly the git log of someone who has given up.",
-	"These commits tell a story: a developer in freefall. The message 'it works now' appeared three times. Before that: 'it broke'. We can only assume chaos reigns.",
-	"Your commit messages are like horoscopes — vague, unprovable, and somehow always wrong. 'update things' has appeared five times. Which things? We'll never know.",
-	"A forensic analysis of your commits reveals the five stages of grief, played on loop. Denial: 'this should work'. Anger: 'WHY'. Bargaining: 'please'. Acceptance: 'whatever'. Repeat.",
+var roastFallbacksEN = []string{
+	"Your commit message says almost nothing, yet still manages to look overconfident.",
+	"This reads like panic was committed directly to main.",
+	"If vagueness were a feature, this commit would be production-ready.",
+	"You changed everything except the part that needed changing.",
+	"This message is so generic it could belong to any disaster.",
 }
 
-func roastLoadHFToken() string {
+var roastFallbacksRU = []string{
+	"Сообщение коммита настолько пустое, что даже git стесняется его хранить.",
+	"Выглядит так, будто паника была запушена напрямую в main.",
+	"Ты изменил всё, кроме того, что действительно было нужно исправить.",
+	"Этот коммит одинаково подходит к любой аварии в проекте.",
+	"Описание максимально общее, как будто детали запрещены законом.",
+}
+
+func roastFallback(lang string) string {
+	if lang == "ru" {
+		return roastFallbacksRU[rand.Intn(len(roastFallbacksRU))]
+	}
+	return roastFallbacksEN[rand.Intn(len(roastFallbacksEN))]
+}
+
+func roastLoadConfig(key string) string {
 	home, _ := os.UserHomeDir()
 	cfg := filepath.Join(home, ".config", "doki", "config")
 	f, err := os.Open(cfg)
 	if err != nil {
-		return os.Getenv("HF_TOKEN")
+		return ""
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		line := sc.Text()
-		if strings.HasPrefix(line, "HF_TOKEN=") {
-			return strings.TrimPrefix(line, "HF_TOKEN=")
+		line := strings.TrimSpace(sc.Text())
+		if strings.HasPrefix(line, key+"=") {
+			return strings.TrimSpace(strings.TrimPrefix(line, key+"="))
 		}
 	}
-	return os.Getenv("HF_TOKEN")
+	return ""
+}
+
+func roastSaveConfig(key, value string) error {
+	home, _ := os.UserHomeDir()
+	cfgDir := filepath.Join(home, ".config", "doki")
+	if err := os.MkdirAll(cfgDir, 0700); err != nil {
+		return err
+	}
+	cfg := filepath.Join(cfgDir, "config")
+	var lines []string
+	if f, err := os.Open(cfg); err == nil {
+		sc := bufio.NewScanner(f)
+		for sc.Scan() {
+			line := sc.Text()
+			if !strings.HasPrefix(strings.TrimSpace(line), key+"=") {
+				lines = append(lines, line)
+			}
+		}
+		f.Close()
+	}
+	lines = append(lines, key+"="+value)
+	return os.WriteFile(cfg, []byte(strings.Join(lines, "\n")+"\n"), 0600)
+}
+
+func roastLoadHFToken() string {
+	if tok := strings.TrimSpace(os.Getenv("HF_TOKEN")); tok != "" {
+		return tok
+	}
+	return roastLoadConfig("HF_TOKEN")
+}
+
+func roastLoadLang() string {
+	lang := strings.ToLower(strings.TrimSpace(roastLoadConfig("GITTY_ROAST_LANG")))
+	if lang == "ru" || lang == "en" {
+		return lang
+	}
+	return "en"
+}
+
+func roastTokenWizard() string {
+	fmt.Println("gitty roast needs a HuggingFace token for AI roast mode.")
+	fmt.Println("Get a token: https://huggingface.co/settings/tokens")
+	fmt.Print("Enter HF token (hf_...): ")
+	reader := bufio.NewReader(os.Stdin)
+	tok, _ := reader.ReadString('\n')
+	tok = strings.TrimSpace(tok)
+	if tok == "" {
+		return ""
+	}
+	if err := roastSaveConfig("HF_TOKEN", tok); err != nil {
+		return ""
+	}
+	fmt.Println("Token saved to ~/.config/doki/config")
+	fmt.Println("The token is stored locally and sent only to api.huggingface.co.")
+	return tok
 }
 
 func roastGetCommits(repoPath string, n int) ([]string, error) {
@@ -4061,17 +4161,21 @@ type roastHFResponse struct {
 	Error json.RawMessage `json:"error"`
 }
 
-func roastCallAPI(token, model string, commits []string) (string, error) {
+func roastCallAPI(token, model, lang string, commits []string) (string, error) {
 	prompt := "Here are recent git commit messages from a project:\n\n"
 	for i, c := range commits {
 		prompt += fmt.Sprintf("%d. %s\n", i+1, c)
 	}
-	prompt += "\nRoast this developer's commit history in 3-4 sentences. Be specific, witty, and devastating but keep it office-appropriate."
+	if lang == "ru" {
+		prompt += "\nВысмей эти коммиты на русском в 1-2 предложениях. Будь конкретным и едким. Без эмодзи, без объяснений."
+	} else {
+		prompt += "\nRoast these commits in English in 1-2 sentences. Be specific and sharp. No emoji, no explanations."
+	}
 
 	req := roastHFRequest{
 		Model:       model,
 		Messages:    []roastHFMessage{{Role: "user", Content: prompt}},
-		MaxTokens:   300,
+		MaxTokens:   110,
 		Temperature: 0.9,
 	}
 	body, err := json.Marshal(req)
@@ -4097,7 +4201,9 @@ func roastCallAPI(token, model string, commits []string) (string, error) {
 		return "", err
 	}
 	if len(result.Error) > 0 && string(result.Error) != "null" {
-		var obj struct{ Message string `json:"message"` }
+		var obj struct {
+			Message string `json:"message"`
+		}
 		if json.Unmarshal(result.Error, &obj) == nil && obj.Message != "" {
 			return "", fmt.Errorf("API: %s", obj.Message)
 		}
@@ -4110,10 +4216,37 @@ func roastCallAPI(token, model string, commits []string) (string, error) {
 	if len(result.Choices) == 0 {
 		return "", fmt.Errorf("empty response from API")
 	}
-	return strings.TrimSpace(result.Choices[0].Message.Content), nil
+	out := strings.TrimSpace(result.Choices[0].Message.Content)
+	return roastNormalize(out), nil
 }
 
-func cmdRoast(repoPath string, n int, model string) {
+func roastNormalize(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, "\"", "")
+	s = strings.Join(strings.Fields(s), " ")
+
+	count := 0
+	var b strings.Builder
+	for _, r := range s {
+		b.WriteRune(r)
+		if r == '.' || r == '!' || r == '?' {
+			count++
+			if count >= 2 {
+				break
+			}
+		}
+	}
+	out := strings.TrimSpace(b.String())
+	if out == "" {
+		out = s
+	}
+	if len(out) > 280 {
+		out = strings.TrimSpace(out[:280])
+	}
+	return out
+}
+
+func cmdRoast(repoPath string, n int, model, lang string) {
 	commits, err := roastGetCommits(repoPath, n)
 	if err != nil {
 		fail("Not a git repository or git not available.")
@@ -4125,7 +4258,7 @@ func cmdRoast(repoPath string, n int, model string) {
 	}
 
 	fmt.Printf("\n%s%s%s\n", colorBold, strings.Repeat("─", 55), colorReset)
-	fmt.Printf("%s🔥 COMMIT ROAST — last %d commits%s\n", colorYellow, len(commits), colorReset)
+	fmt.Printf("%sCOMMIT ROAST — last %d commits%s\n", colorYellow, len(commits), colorReset)
 	fmt.Printf("%s%s%s\n\n", colorBold, strings.Repeat("─", 55), colorReset)
 
 	for i, c := range commits {
@@ -4134,16 +4267,16 @@ func cmdRoast(repoPath string, n int, model string) {
 	fmt.Println()
 
 	token := roastLoadHFToken()
+	if token == "" {
+		token = roastTokenWizard()
+	}
 	var roast string
 	if token == "" {
-		info("No HF_TOKEN found — using fallback roast.")
-		roast = roastFallbacks[rand.Intn(len(roastFallbacks))]
+		roast = roastFallback(lang)
 	} else {
-		info("Consulting the AI roastmaster...")
-		roast, err = roastCallAPI(token, model, commits)
+		roast, err = roastCallAPI(token, model, lang, commits)
 		if err != nil {
-			hint(fmt.Sprintf("API error: %v — using fallback.", err))
-			roast = roastFallbacks[rand.Intn(len(roastFallbacks))]
+			roast = roastFallback(lang)
 		}
 	}
 

@@ -1,4 +1,8 @@
-# Build artifacts inside source/ � the root gitty.exe IS tracked
+# Compiled binaries
+/gitty
+/gitty.exe
+
+# Build artifacts
 source/*.exe
 source/vendor/
 dist/

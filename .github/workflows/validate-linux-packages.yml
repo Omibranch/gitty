@@ -29,7 +29,7 @@ jobs:
       - name: Build Linux amd64 binary
         run: |
           mkdir -p dist
-          GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o dist/gitty-linux-amd64 .
+          GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o dist/gitty-linux-amd64 ./cmd/gitty/
 
       - name: Build DEB package
         run: |

@@ -136,9 +136,6 @@ gitty checkpoint "v1" in main
 | `gitty add branch "name"` | Create local branch (stays on current branch) |
 | `gitty switch to branch <name>` | Switch to an existing branch |
 | `gitty switch to repo <owner/repo>` | Rewire this folder to a different GitHub repo (affects `gitty state` and `gitty up`) |
-| `gitty rename branch "old"="new"` | Rename branch locally and remotely |
-| `gitty rename repo "new-name"` | Rename current linked GitHub repo |
-| `gitty rename repo "old"="new"` | Rename specific GitHub repo |
 
 ### Daily workflow
 

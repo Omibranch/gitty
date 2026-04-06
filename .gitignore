@@ -1,12 +1,22 @@
+.gitignore
+# Compiled binaries
 /gitty
 /gitty.exe
+
+# Build artifacts
 source/
 dist/
 pkg/out/
 pkg/gitty-amd64
 pkg/gitty-arm64
 pkg/deb/usr/bin/gitty
+
+# VS Code
 .vscode/
+
+# Python venv (leftover from tooling)
 .venv/
+
+# OS
 Thumbs.db
 .DS_Store

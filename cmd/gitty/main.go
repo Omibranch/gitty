@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -3924,6 +3926,33 @@ func dispatch(args []string) {
 		}
 		cmdAlias(name, command)
 
+	case "roast":
+		n := 5
+		repo := "."
+		model := "Qwen/Qwen2.5-72B-Instruct"
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--last":
+				if i+1 < len(args) {
+					if v, err := strconv.Atoi(args[i+1]); err == nil {
+						n = v
+						i++
+					}
+				}
+			case "--repo":
+				if i+1 < len(args) {
+					repo = args[i+1]
+					i++
+				}
+			case "--model":
+				if i+1 < len(args) {
+					model = args[i+1]
+					i++
+				}
+			}
+		}
+		cmdRoast(repo, n, model)
+
 	default:
 		rePush := regexp.MustCompile(`^push=(.+)$`)
 		rePull := regexp.MustCompile(`^pull~(.+)$`)
@@ -3960,6 +3989,166 @@ func dispatch(args []string) {
 			os.Exit(1)
 		}
 	}
+}
+
+// ─────────────────────────────────────────────
+// Roast command
+// ─────────────────────────────────────────────
+
+const roastHFAPIURL = "https://router.huggingface.co/v1/chat/completions"
+
+var roastFallbacks = []string{
+	"Congratulations: your commit history reads like someone learning to type while blindfolded. 'fix stuff', 'asdf', 'final FINAL v3' — a masterclass in communicating nothing.",
+	"Your commits are a timeline of panic. Brief, cryptic, and mostly apologies. 'oops', 'forgot this', 'WHY' — truly the git log of someone who has given up.",
+	"These commits tell a story: a developer in freefall. The message 'it works now' appeared three times. Before that: 'it broke'. We can only assume chaos reigns.",
+	"Your commit messages are like horoscopes — vague, unprovable, and somehow always wrong. 'update things' has appeared five times. Which things? We'll never know.",
+	"A forensic analysis of your commits reveals the five stages of grief, played on loop. Denial: 'this should work'. Anger: 'WHY'. Bargaining: 'please'. Acceptance: 'whatever'. Repeat.",
+}
+
+func roastLoadHFToken() string {
+	home, _ := os.UserHomeDir()
+	cfg := filepath.Join(home, ".config", "doki", "config")
+	f, err := os.Open(cfg)
+	if err != nil {
+		return os.Getenv("HF_TOKEN")
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.HasPrefix(line, "HF_TOKEN=") {
+			return strings.TrimPrefix(line, "HF_TOKEN=")
+		}
+	}
+	return os.Getenv("HF_TOKEN")
+}
+
+func roastGetCommits(repoPath string, n int) ([]string, error) {
+	cmd := exec.Command("git", "-C", repoPath, "log",
+		fmt.Sprintf("--max-count=%d", n),
+		"--pretty=format:%s (%an, %ar)",
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var msgs []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			msgs = append(msgs, line)
+		}
+	}
+	return msgs, nil
+}
+
+type roastHFMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type roastHFRequest struct {
+	Model       string           `json:"model"`
+	Messages    []roastHFMessage `json:"messages"`
+	MaxTokens   int              `json:"max_tokens"`
+	Temperature float64          `json:"temperature"`
+}
+
+type roastHFResponse struct {
+	Choices []struct {
+		Message roastHFMessage `json:"message"`
+	} `json:"choices"`
+	Error json.RawMessage `json:"error"`
+}
+
+func roastCallAPI(token, model string, commits []string) (string, error) {
+	prompt := "Here are recent git commit messages from a project:\n\n"
+	for i, c := range commits {
+		prompt += fmt.Sprintf("%d. %s\n", i+1, c)
+	}
+	prompt += "\nRoast this developer's commit history in 3-4 sentences. Be specific, witty, and devastating but keep it office-appropriate."
+
+	req := roastHFRequest{
+		Model:       model,
+		Messages:    []roastHFMessage{{Role: "user", Content: prompt}},
+		MaxTokens:   300,
+		Temperature: 0.9,
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return "", err
+	}
+	httpReq, err := http.NewRequest("POST", roastHFAPIURL, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var result roastHFResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if len(result.Error) > 0 && string(result.Error) != "null" {
+		var obj struct{ Message string `json:"message"` }
+		if json.Unmarshal(result.Error, &obj) == nil && obj.Message != "" {
+			return "", fmt.Errorf("API: %s", obj.Message)
+		}
+		var s string
+		if json.Unmarshal(result.Error, &s) == nil && s != "" {
+			return "", fmt.Errorf("API: %s", s)
+		}
+		return "", fmt.Errorf("API error")
+	}
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("empty response from API")
+	}
+	return strings.TrimSpace(result.Choices[0].Message.Content), nil
+}
+
+func cmdRoast(repoPath string, n int, model string) {
+	commits, err := roastGetCommits(repoPath, n)
+	if err != nil {
+		fail("Not a git repository or git not available.")
+		os.Exit(1)
+	}
+	if len(commits) == 0 {
+		fail("No commits found — nothing to roast.")
+		os.Exit(1)
+	}
+
+	fmt.Printf("\n%s%s%s\n", colorBold, strings.Repeat("─", 55), colorReset)
+	fmt.Printf("%s🔥 COMMIT ROAST — last %d commits%s\n", colorYellow, len(commits), colorReset)
+	fmt.Printf("%s%s%s\n\n", colorBold, strings.Repeat("─", 55), colorReset)
+
+	for i, c := range commits {
+		fmt.Printf("%s%d.%s %s%s%s\n", colorDim, i+1, colorReset, colorCyan, c, colorReset)
+	}
+	fmt.Println()
+
+	token := roastLoadHFToken()
+	var roast string
+	if token == "" {
+		info("No HF_TOKEN found — using fallback roast.")
+		roast = roastFallbacks[rand.Intn(len(roastFallbacks))]
+	} else {
+		info("Consulting the AI roastmaster...")
+		roast, err = roastCallAPI(token, model, commits)
+		if err != nil {
+			hint(fmt.Sprintf("API error: %v — using fallback.", err))
+			roast = roastFallbacks[rand.Intn(len(roastFallbacks))]
+		}
+	}
+
+	fmt.Printf("\n%s%s%s\n\n", colorRed, roast, colorReset)
+	fmt.Printf("%s%s%s\n\n", colorBold, strings.Repeat("─", 55), colorReset)
 }
 
 // ─────────────────────────────────────────────

@@ -23,7 +23,7 @@
 `gitty` is a single-binary CLI for Git and GitHub with short, human-readable commands.
 
 Core idea:
-- `gitty up` replaces `git add . && git commit -m "..." && git push`
+- `gitty fix <file>` — interactive conflict resolution, no editor needed`
 
 If gitty saves you time, a ⭐ on GitHub means a lot — it helps others find it too.
 
@@ -255,7 +255,7 @@ Requires Go 1.21+.
 `gitty` - это однофайловый CLI для Git и GitHub с короткими, понятными командами.
 
 Главная идея:
-- `gitty up` заменяет `git add . && git commit -m "..." && git push`
+- `gitty fix <файл> `— интерактивное разрешение конфликтов, не выходя из терминала`
 
 Если gitty экономит тебе время — ⭐ на GitHub будет приятен и поможет другим найти проект.
 
@@ -483,3 +483,5 @@ GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../gitty .
 ---
 
 <div align="center">Made with ❤ in Go</div>
+
+# daemon trigger 2026-04-06 19:07:11 UTC

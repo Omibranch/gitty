@@ -1,0 +1,43 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build binaries
+        run: |
+          mkdir -p dist
+          GOOS=linux   GOARCH=amd64  go build -ldflags='-s -w' -o dist/gitty-linux-amd64   ./cmd/gitty/
+          GOOS=linux   GOARCH=arm64  go build -ldflags='-s -w' -o dist/gitty-linux-arm64   ./cmd/gitty/
+          GOOS=darwin  GOARCH=amd64  go build -ldflags='-s -w' -o dist/gitty-darwin-amd64  ./cmd/gitty/
+          GOOS=darwin  GOARCH=arm64  go build -ldflags='-s -w' -o dist/gitty-darwin-arm64  ./cmd/gitty/
+          GOOS=windows GOARCH=amd64  go build -ldflags='-s -w' -o dist/gitty.exe           ./cmd/gitty/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/gitty-linux-amd64
+            dist/gitty-linux-arm64
+            dist/gitty-darwin-amd64
+            dist/gitty-darwin-arm64
+            dist/gitty.exe
+          generate_release_notes: true

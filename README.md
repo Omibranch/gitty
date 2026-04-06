@@ -134,6 +134,8 @@ gitty checkpoint "v1" in main
 | `gitty add repo "name"` | Create private GitHub repo and link folder |
 | `gitty add repo "name" --public` | Create public GitHub repo |
 | `gitty add branch "name"` | Create local branch (stays on current branch) |
+| `gitty switch to branch <name>` | Switch to an existing branch |
+| `gitty switch to repo <owner/repo>` | Rewire this folder to a different GitHub repo (affects `gitty state` and `gitty up`) |
 | `gitty rename branch "old"="new"` | Rename branch locally and remotely |
 | `gitty rename repo "new-name"` | Rename current linked GitHub repo |
 | `gitty rename repo "old"="new"` | Rename specific GitHub repo |
@@ -366,6 +368,8 @@ gitty checkpoint "v1" in main
 | `gitty add repo "name"` | Создать приватный репозиторий на GitHub и привязать папку |
 | `gitty add repo "name" --public` | Создать публичный репозиторий |
 | `gitty add branch "name"` | Создать локальную ветку (без переключения) |
+| `gitty switch to branch <имя>` | Переключиться на существующую ветку |
+| `gitty switch to repo <owner/repo>` | Переключить папку на другой репозиторий GitHub (влияет на `gitty state` и `gitty up`) |
 | `gitty rename branch "old"="new"` | Переименовать ветку локально и на remote |
 | `gitty rename repo "new-name"` | Переименовать текущий привязанный репозиторий |
 | `gitty rename repo "old"="new"` | Переименовать конкретный репозиторий |

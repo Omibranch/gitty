@@ -717,6 +717,72 @@ func cmdAddRepo(name string, public bool) {
 	}
 }
 
+// cmdSwitchBranch checks out an existing local or remote branch.
+func cmdSwitchBranch(name string) {
+	if name == "" {
+		fail("No branch name provided.")
+		hint("Usage: gitty switch to branch <name>")
+		os.Exit(1)
+	}
+	name = strings.Trim(name, "\"'")
+	info(fmt.Sprintf("Switching to branch \"%s\"...", name))
+	if err := run("git", "checkout", name); err != nil {
+		// Branch may only exist on remote — try creating a tracking branch
+		if err2 := run("git", "checkout", "-b", name, "--track", "origin/"+name); err2 != nil {
+			fail(fmt.Sprintf("Branch \"%s\" not found locally or on remote.", name))
+			hint("Run 'gitty state --branches' to see available branches.")
+			os.Exit(1)
+		}
+	}
+	current, _ := runSilent("git", "rev-parse", "--abbrev-ref", "HEAD")
+	success(fmt.Sprintf("Now on branch \"%s\".", strings.TrimSpace(current)))
+}
+
+// cmdSwitchRepo rewires the current folder to a different GitHub repository
+// by updating git remote origin. name can be "owner/repo" or just "reponame"
+// (current GitHub login is used as owner in that case).
+// Afterwards, gitty state and gitty up will operate against the new remote.
+func cmdSwitchRepo(name string) {
+	if name == "" {
+		fail("No repository name provided.")
+		hint("Usage: gitty switch to repo <owner/repo>  or  gitty switch to repo <reponame>")
+		os.Exit(1)
+	}
+	name = strings.Trim(name, "\"'")
+
+	slug := name
+	if !strings.Contains(slug, "/") {
+		// No owner given — resolve current GitHub login
+		login, err := runSilent("gh", "api", "user", "--jq", ".login")
+		if err != nil || strings.TrimSpace(login) == "" {
+			fail("Could not resolve GitHub login. Make sure you are authenticated.")
+			hint("Run 'gitty auth' first.")
+			os.Exit(1)
+		}
+		slug = strings.TrimSpace(login) + "/" + slug
+	}
+
+	newURL := "https://github.com/" + slug + ".git"
+
+	// Check if origin already exists
+	existing, remoteErr := runSilent("git", "remote", "get-url", "origin")
+	if remoteErr == nil && strings.TrimSpace(existing) != "" {
+		info(fmt.Sprintf("Previous remote: %s", strings.TrimSpace(existing)))
+		if err := run("git", "remote", "set-url", "origin", newURL); err != nil {
+			fail("Failed to update remote origin: " + err.Error())
+			os.Exit(1)
+		}
+	} else {
+		if err := run("git", "remote", "add", "origin", newURL); err != nil {
+			fail("Failed to set remote origin: " + err.Error())
+			os.Exit(1)
+		}
+	}
+
+	success(fmt.Sprintf("Switched repo context to %s", slug))
+	info("gitty state and gitty up will now use: " + newURL)
+}
+
 // cmdAddBranch creates a new local branch without switching to it.
 // Branch name must be provided in quotes.
 func cmdAddBranch(name string) {
@@ -3819,6 +3885,33 @@ func dispatch(args []string) {
 			os.Exit(1)
 		}
 		cmdBack(strings.Trim(args[1], "\"'"), n)
+
+	case "switch":
+		// gitty switch to branch <name>
+		// gitty switch to repo <name>
+		// "to" keyword is optional
+		subArgs := args[1:]
+		// strip leading "to" if present
+		if len(subArgs) > 0 && strings.ToLower(subArgs[0]) == "to" {
+			subArgs = subArgs[1:]
+		}
+		if len(subArgs) < 2 {
+			fail("Incomplete switch command.")
+			hint("Usage: gitty switch to branch <name>")
+			hint("       gitty switch to repo <owner/repo>")
+			os.Exit(1)
+		}
+		target := strings.Trim(subArgs[1], "\"'")
+		switch strings.ToLower(subArgs[0]) {
+		case "branch":
+			cmdSwitchBranch(target)
+		case "repo":
+			cmdSwitchRepo(target)
+		default:
+			fail(fmt.Sprintf("Unknown switch target: '%s'", subArgs[0]))
+			hint("Valid: gitty switch to branch <name> | gitty switch to repo <name>")
+			os.Exit(1)
+		}
 
 	case "alias":
 		name := ""

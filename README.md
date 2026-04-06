@@ -25,6 +25,8 @@
 Core idea:
 - `gitty up` replaces `git add . && git commit -m "..." && git push`
 
+If gitty saves you time, a ⭐ on GitHub means a lot — it helps others find it too.
+
 ## Why gitty
 
 - Single binary, no external runtime dependencies
@@ -255,6 +257,8 @@ Requires Go 1.21+.
 
 Главная идея:
 - `gitty up` заменяет `git add . && git commit -m "..." && git push`
+
+Если gitty экономит тебе время — ⭐ на GitHub будет приятен и поможет другим найти проект.
 
 ## Зачем использовать gitty
 

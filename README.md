@@ -1,6 +1,6 @@
 <div align="center">
 
-  <img src="https://files.catbox.moe/sjgj3f.png" alt="gitty" width="1280" height="720" />
+  <img src="https://files.catbox.moe/16riis.png" alt="gitty" width="1280" height="720" />
 
   <h3>gitty - Git CLI that speaks human</h3>
 

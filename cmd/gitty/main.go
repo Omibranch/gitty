@@ -22,7 +22,7 @@ import (
 // Version — change this when releasing a new build
 // ─────────────────────────────────────────────
 
-const gittyVersion = "2.2"
+const gittyVersion = "2.2.1"
 
 // ─────────────────────────────────────────────
 // ANSI colour helpers
@@ -2626,12 +2626,143 @@ func cmdPick(file, rangeSpec string) {
 // ─────────────────────────────────────────────
 
 func cmdFix(file string) {
-	if file == "" {
-		fail("Не указан файл.")
-		hint("Usage: gitty fix <файл>")
+	if file != "" {
+		resolveFileConflicts(file)
+		return
+	}
+
+	// 1. Пробуем push
+	info("Попытка git push...")
+	out, err := runSilent("git", "push")
+	if err == nil {
+		success("Push выполнен успешно.")
+		return
+	}
+
+	// Проверяем — это конфликт/расхождение или другая ошибка
+	if !isPushConflict(out) {
+		fail("git push завершился с ошибкой:\n" + out)
 		os.Exit(1)
 	}
 
+	// 2. push отклонён — делаем pull --rebase
+	info("Удалённая ветка опережает локальную. Выполняю git pull --rebase...")
+	out, err = runSilent("git", "pull", "--rebase")
+	if err == nil {
+		success("Rebase завершён без конфликтов. Повторяю push...")
+		retryPush()
+		return
+	}
+
+	// 3. Rebase дал конфликты — ищем файлы
+	conflictedFiles := getConflictedFiles()
+	if len(conflictedFiles) == 0 {
+		fail("git pull --rebase завершился с ошибкой:\n" + out)
+		os.Exit(1)
+	}
+
+	fmt.Printf("\n%s[CONFLICTS] Обнаружены конфликты в %d файл(ах):%s\n", colorYellow, len(conflictedFiles), colorReset)
+	for i, f := range conflictedFiles {
+		fmt.Printf("   %s%d. %s%s\n", colorCyan, i+1, f, colorReset)
+	}
+	fmt.Println()
+
+	// 4. Спрашиваем: фиксить все сразу или выбрать конкретный
+	resolveChoices := []string{
+		"Исправить все файлы",
+		"Выбрать конкретный файл",
+		"Прервать (git rebase --abort)",
+	}
+	fmt.Printf("%s↑↓%s выбор  %sEnter%s применить\n", colorYellow, colorReset, colorGreen, colorReset)
+	resolveChoice := pickChoice(resolveChoices)
+
+	switch resolveChoice {
+	case 0:
+		for _, f := range conflictedFiles {
+			resolveFileConflicts(f)
+		}
+	case 1:
+		fmt.Printf("\n%sВыберите файл для разрешения конфликтов:%s\n", colorCyan, colorReset)
+		fmt.Printf("%s↑↓%s выбор  %sEnter%s применить\n", colorYellow, colorReset, colorGreen, colorReset)
+		fileChoice := pickChoice(conflictedFiles)
+		resolveFileConflicts(conflictedFiles[fileChoice])
+	case 2:
+		info("Прерываю rebase (git rebase --abort)...")
+		runSilent("git", "rebase", "--abort") //nolint
+		info("Rebase отменён. Изменения не применены.")
+		os.Exit(0)
+	}
+
+	// 5. Проверяем — остались ли ещё неразрешённые конфликты
+	remaining := getConflictedFiles()
+	if len(remaining) > 0 {
+		fmt.Printf("\n%s⚠ Остались неразрешённые конфликты в %d файл(ах):%s\n", colorYellow, len(remaining), colorReset)
+		for _, f := range remaining {
+			fmt.Printf("   %s- %s%s\n", colorCyan, f, colorReset)
+		}
+		hint("Запусти 'gitty fix' снова или разреши вручную, затем 'git rebase --continue'.")
+		os.Exit(1)
+	}
+
+	// 6. Завершаем rebase
+	info("Завершаю rebase (git rebase --continue)...")
+	out, err = runSilent("git", "rebase", "--continue")
+	if err != nil {
+		fail("git rebase --continue завершился с ошибкой:\n" + out)
+		hint("Возможно, остались неразрешённые конфликты. Проверь файлы вручную.")
+		os.Exit(1)
+	}
+
+	// 7. Повторный push
+	retryPush()
+}
+
+// retryPush — повторяет push после успешного rebase.
+func retryPush() {
+	info("Повторяю git push...")
+	out, err := runSilent("git", "push")
+	if err != nil {
+		fail("git push завершился с ошибкой:\n" + out)
+		os.Exit(1)
+	}
+	success("Push выполнен успешно.")
+}
+
+// isPushConflict — определяет, отклонён ли push из-за расхождения веток.
+func isPushConflict(output string) bool {
+	markers := []string{
+		"rejected",
+		"non-fast-forward",
+		"fetch first",
+		"cannot push",
+		"Updates were rejected",
+	}
+	lower := strings.ToLower(output)
+	for _, m := range markers {
+		if strings.Contains(lower, strings.ToLower(m)) {
+			return true
+		}
+	}
+	return false
+}
+
+// getConflictedFiles — возвращает список файлов с маркерами конфликтов через git status.
+func getConflictedFiles() []string {
+	out, err := runSilent("git", "diff", "--name-only", "--diff-filter=U")
+	if err != nil || strings.TrimSpace(out) == "" {
+		return nil
+	}
+	var files []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line != "" {
+			files = append(files, line)
+		}
+	}
+	return files
+}
+
+// resolveFileConflicts — интерактивное разрешение конфликтов в одном файле.
+func resolveFileConflicts(file string) {
 	content, err := os.ReadFile(file)
 	if err != nil {
 		fail("Не удалось прочитать файл: " + err.Error())
@@ -2674,28 +2805,37 @@ func cmdFix(file string) {
 		mine := result[c.start+1 : c.mid]
 		theirs := result[c.mid+1 : c.end]
 
-		fmt.Printf("\n%s── Конфликт %d/%d %s%s\n", colorCyan, ci+1, len(conflicts), strings.Repeat("─", 28), colorReset)
-		fmt.Printf("  %sМои изменения:%s\n", colorGreen, colorReset)
-		for _, l := range mine {
-			fmt.Printf("    %s\n", l)
+		fmt.Printf("\n%s── Конфликт %d/%d в %s %s%s\n",
+			colorCyan, ci+1, len(conflicts), file, strings.Repeat("─", 20), colorReset)
+
+		const maxPreview = 8
+		printSide := func(label, color string, lines []string) {
+			fmt.Printf("%s%s:%s\n", color, label, colorReset)
+			for i, l := range lines {
+				if i >= maxPreview {
+					fmt.Printf("  %s... (+%d строк)%s\n", colorYellow, len(lines)-maxPreview, colorReset)
+					break
+				}
+				fmt.Printf("  %s\n", l)
+			}
 		}
-		fmt.Printf("  %sЧужие изменения:%s\n", colorYellow, colorReset)
-		for _, l := range theirs {
-			fmt.Printf("    %s\n", l)
-		}
+		printSide("◀ МОЁ (HEAD)", colorGreen, mine)
+		printSide("▶ ВХОДЯЩЕЕ", colorRed, theirs)
 		fmt.Println()
 
 		choices := []string{
-			"Оставить моё",
-			"Взять чужое",
+			"Оставить моё (HEAD)",
+			"Взять входящее",
 			"Объединить оба",
-			"Отмена",
+			"Прервать",
 		}
 		fmt.Printf("%s↑↓%s выбор  %sEnter%s применить\n", colorYellow, colorReset, colorGreen, colorReset)
 		choice := pickChoice(choices)
 		if choice == 3 {
-			info("Отмена.")
-			return
+			info("Прерываю rebase (git rebase --abort)...")
+			runSilent("git", "rebase", "--abort") //nolint
+			info("Rebase отменён. Изменения не применены.")
+			os.Exit(0)
 		}
 
 		var replacement []string

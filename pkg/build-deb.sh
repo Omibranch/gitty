@@ -27,7 +27,7 @@ chmod 0755 "$PKG_DIR/usr/bin/gitty"
 
 # Debian documentation files required by lintian
 cat > "$DOC_DIR/changelog" <<'EOF'
-gitty (2.0.0) stable; urgency=medium
+gitty (2.2.1) stable; urgency=medium
 
   * Add Linux package metadata and validation workflow.
   * Add AUR package descriptors and Debian package build support.
@@ -44,6 +44,6 @@ if [ "$(id -u)" -eq 0 ]; then
   chown -R root:root "$PKG_DIR"
 fi
 
-dpkg-deb --root-owner-group --build "$PKG_DIR" "$OUT_DIR/gitty_2.0.0_amd64.deb"
+dpkg-deb --root-owner-group --build "$PKG_DIR" "$OUT_DIR/gitty_2.2.1_amd64.deb"
 
-echo "[SUCCESS] Built: $OUT_DIR/gitty_2.0.0_amd64.deb"
+echo "[SUCCESS] Built: $OUT_DIR/gitty_2.2.1_amd64.deb"

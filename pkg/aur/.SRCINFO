@@ -14,8 +14,8 @@ pkgbase = gitty-cli
 	noextract = gitty-cli-2.2.1-x86_64
 	noextract = gitty-cli-2.2.1-aarch64
 	source_x86_64 = gitty-cli-2.2.1-x86_64::https://github.com/Omibranch/gitty/releases/download/v2.2.1/gitty-linux-amd64
-	sha256sums_x86_64 = c217fd5b56dac48b9363b69d9d0bc080def7593f6129afb25d82a05318d0672e
+	sha256sums_x86_64 = d9c76ea528e629f1205c2f5243da20b4fe8ad31b135d411a84b1b9be98a08aed
 	source_aarch64 = gitty-cli-2.2.1-aarch64::https://github.com/Omibranch/gitty/releases/download/v2.2.1/gitty-linux-arm64
-	sha256sums_aarch64 = ed15890b0bcac7f6eba84d05f4b995749c2d8d07d64b4a87addcb2a265bb360c
+	sha256sums_aarch64 = 08237d39dc89b7a426643fa68f1d87ad274aea7817d99ce0b12a7669ed88cb04
 
 pkgname = gitty-cli

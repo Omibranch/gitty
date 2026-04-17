@@ -22,7 +22,7 @@ import (
 // Version — change this when releasing a new build
 // ─────────────────────────────────────────────
 
-const gittyVersion = "2.2.1"
+const gittyVersion = "2.3.0"
 
 // ─────────────────────────────────────────────
 // ANSI colour helpers
@@ -2517,6 +2517,23 @@ func cmdUp(customMsg string) {
 	cmdPush(branch)
 }
 
+func cmdUpToBranch(targetBranch, customMsg string) {
+	if targetBranch == "" {
+		fail("Не указана целевая ветка.")
+		hint("Usage: gitty up to <branch>")
+		os.Exit(1)
+	}
+	cmdAddDot(customMsg)
+	info(fmt.Sprintf("Pushing to origin/%s...", targetBranch))
+	pushOut, pushErr := runSilent("git", "push", "origin", "HEAD:"+targetBranch)
+	if pushErr != nil {
+		fail("git push failed: " + pushOut)
+		hint(fmt.Sprintf("Для первого пуша: git push --set-upstream origin HEAD:%s", targetBranch))
+		os.Exit(1)
+	}
+	success(fmt.Sprintf("Changes pushed to origin/%s.", targetBranch))
+}
+
 // ─────────────────────────────────────────────
 // gitty pick
 // ─────────────────────────────────────────────
@@ -2682,6 +2699,8 @@ func cmdFix(file string) {
 		return
 	}
 
+	inRebase := false
+
 	// 1. Пробуем push
 	info("Попытка git push...")
 	out, err := runSilent("git", "push")
@@ -2690,35 +2709,38 @@ func cmdFix(file string) {
 		return
 	}
 
-	// Проверяем — это конфликт/расхождение или другая ошибка
-	if !isPushConflict(out) {
-		fail("git push завершился с ошибкой:\n" + out)
-		os.Exit(1)
+	pushErrOutput := out
+
+	// 2. Если push отклонён из-за расхождения веток — делаем pull --rebase
+	if isPushConflict(out) {
+		info("Удалённая ветка опережает локальную. Выполняю git pull --rebase...")
+		out, err = runSilent("git", "pull", "--rebase")
+		if err == nil {
+			success("Rebase завершён без конфликтов. Повторяю push...")
+			retryPush()
+			return
+		}
+		inRebase = true
 	}
 
-	// 2. push отклонён — делаем pull --rebase
-	info("Удалённая ветка опережает локальную. Выполняю git pull --rebase...")
-	out, err = runSilent("git", "pull", "--rebase")
-	if err == nil {
-		success("Rebase завершён без конфликтов. Повторяю push...")
-		retryPush()
-		return
-	}
-
-	// 3. Rebase дал конфликты — ищем файлы
-	conflictedFiles := getConflictedFiles()
+	// 3. Сканируем ВСЕ файлы на наличие маркеров конфликтов
+	conflictedFiles := scanAllConflictFiles()
 	if len(conflictedFiles) == 0 {
-		fail("git pull --rebase завершился с ошибкой:\n" + out)
+		fail("git push завершился с ошибкой:\n" + pushErrOutput)
+		if strings.Contains(pushErrOutput, "upstream") || strings.Contains(pushErrOutput, "set-upstream") {
+			hint("Для привязки ветки к remote: git push --set-upstream origin <branch>")
+		}
 		os.Exit(1)
 	}
 
+	// 4. Показываем список конфликтных файлов
 	fmt.Printf("\n%s[CONFLICTS] Обнаружены конфликты в %d файл(ах):%s\n", colorYellow, len(conflictedFiles), colorReset)
 	for i, f := range conflictedFiles {
 		fmt.Printf("   %s%d. %s%s\n", colorCyan, i+1, f, colorReset)
 	}
 	fmt.Println()
 
-	// 4. Спрашиваем: фиксить все сразу или выбрать конкретный
+	// 5. Спрашиваем: фиксить все сразу или выбрать конкретный
 	resolveChoices := []string{
 		"Исправить все файлы",
 		"Выбрать конкретный файл",
@@ -2738,14 +2760,18 @@ func cmdFix(file string) {
 		fileChoice := pickChoice(conflictedFiles)
 		resolveFileConflicts(conflictedFiles[fileChoice])
 	case 2:
-		info("Прерываю rebase (git rebase --abort)...")
-		runSilent("git", "rebase", "--abort") //nolint
-		info("Rebase отменён. Изменения не применены.")
+		if inRebase {
+			info("Прерываю rebase (git rebase --abort)...")
+			runSilent("git", "rebase", "--abort") //nolint
+			info("Rebase отменён. Изменения не применены.")
+		} else {
+			info("Отменено.")
+		}
 		os.Exit(0)
 	}
 
-	// 5. Проверяем — остались ли ещё неразрешённые конфликты
-	remaining := getConflictedFiles()
+	// 6. Проверяем — остались ли ещё неразрешённые конфликты
+	remaining := scanAllConflictFiles()
 	if len(remaining) > 0 {
 		fmt.Printf("\n%s⚠ Остались неразрешённые конфликты в %d файл(ах):%s\n", colorYellow, len(remaining), colorReset)
 		for _, f := range remaining {
@@ -2755,16 +2781,18 @@ func cmdFix(file string) {
 		os.Exit(1)
 	}
 
-	// 6. Завершаем rebase
-	info("Завершаю rebase (git rebase --continue)...")
-	out, err = runSilent("git", "rebase", "--continue")
-	if err != nil {
-		fail("git rebase --continue завершился с ошибкой:\n" + out)
-		hint("Возможно, остались неразрешённые конфликты. Проверь файлы вручную.")
-		os.Exit(1)
+	// 7. Завершаем rebase, если он был запущен
+	if inRebase {
+		info("Завершаю rebase (git rebase --continue)...")
+		out, err = runSilent("git", "rebase", "--continue")
+		if err != nil {
+			fail("git rebase --continue завершился с ошибкой:\n" + out)
+			hint("Возможно, остались неразрешённые конфликты. Проверь файлы вручную.")
+			os.Exit(1)
+		}
 	}
 
-	// 7. Повторный push
+	// 8. Повторный push
 	retryPush()
 }
 
@@ -2810,6 +2838,25 @@ func getConflictedFiles() []string {
 		}
 	}
 	return files
+}
+
+// scanAllConflictFiles — сканирует все отслеживаемые и неигнорируемые файлы на маркеры конфликтов.
+func scanAllConflictFiles() []string {
+	out, _ := runSilent("git", "ls-files", "--cached", "--others", "--exclude-standard")
+	var result []string
+	for _, f := range strings.Split(strings.TrimSpace(out), "\n") {
+		if f == "" {
+			continue
+		}
+		content, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		if bytes.Contains(content, []byte("<<<<<<<")) {
+			result = append(result, f)
+		}
+	}
+	return result
 }
 
 // resolveFileConflicts — интерактивное разрешение конфликтов в одном файле.
@@ -4040,7 +4087,11 @@ func dispatch(args []string) {
 				break
 			}
 		}
-		cmdUp(customMsg)
+		if len(args) >= 3 && args[1] == "to" {
+			cmdUpToBranch(args[2], customMsg)
+		} else {
+			cmdUp(customMsg)
+		}
 
 	case "pick":
 		if len(args) < 3 {

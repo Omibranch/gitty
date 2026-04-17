@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
 PackageIdentifier: Omibranch.Gitty
-PackageVersion: 2.2.1
+PackageVersion: 2.3.0
 Platform:
   - Windows.Desktop
 MinimumOSVersion: 10.0.0.0
@@ -10,8 +10,8 @@ InstallModes:
   - silent
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/Omibranch/gitty/releases/download/v2.2.1/gitty.exe
-    InstallerSha256: 993591FDC58A2A7921CBF8FBF7E6A5A23D268243194151011A6D7F5159E1B29A
+    InstallerUrl: https://github.com/Omibranch/gitty/releases/download/v2.3.0/gitty.exe
+    InstallerSha256: D867AE8365B40975F1049FC390868AD86E5E87F1C35974A0673DD7B4714F783C
     InstallerType: portable
     ProductCode: Omibranch.Gitty
 Commands:

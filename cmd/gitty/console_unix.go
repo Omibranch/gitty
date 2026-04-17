@@ -46,9 +46,9 @@ type termiosState struct {
 
 // saved terminal state for restore
 var (
-	savedState  termiosState
-	stdinFd     uintptr
-	stateValid  bool
+	savedState termiosState
+	stdinFd    uintptr
+	stateValid bool
 )
 
 func tcgetattr(fd uintptr, t *termiosState) error {
@@ -93,6 +93,8 @@ func setConsoleModeRaw(_ *consoleDLL) error {
 
 	// Raw mode: disable canonical mode and echo; read 1 byte at a time
 	t.Lflag &^= syscall.ICANON | syscall.ECHO
+	// Disable output post-processing to prevent escape sequences from being interpreted
+	t.Oflag &^= syscall.OPOST
 	t.Cc[syscall.VMIN] = 1
 	t.Cc[syscall.VTIME] = 0
 	return tcsetattr(fd, &t)
@@ -122,24 +124,29 @@ func readKey() (int, error) {
 // Printable characters: keyCode == keyChar, char holds the rune.
 // Special keys: char == 0, keyCode is one of the keyXxx constants.
 func readKeyOrChar() (int, rune, error) {
-	buf := make([]byte, 8)
+	buf := make([]byte, 16)
 	n, err := os.Stdin.Read(buf)
 	if err != nil || n == 0 {
 		return keyEnter, 0, err
 	}
 
-	// ANSI escape sequence: ESC [ A/B/C/D  (arrow keys)
-	if n >= 3 && buf[0] == 0x1b && buf[1] == '[' {
-		switch buf[2] {
-		case 'A':
-			return keyUp, 0, nil
-		case 'B':
-			return keyDown, 0, nil
-		case 'C':
-			return keyRight, 0, nil
-		case 'D':
-			return keyLeft, 0, nil
+	// ANSI escape sequence: ESC [ ... (arrow keys and other special sequences)
+	if buf[0] == 0x1b && n > 1 {
+		if buf[1] == '[' && n >= 3 {
+			switch buf[2] {
+			case 'A':
+				return keyUp, 0, nil
+			case 'B':
+				return keyDown, 0, nil
+			case 'C':
+				return keyRight, 0, nil
+			case 'D':
+				return keyLeft, 0, nil
+			}
 		}
+		// Any escape sequence we don't recognize, consume it all
+		// to prevent it from being printed to the screen
+		return keyEsc, 0, nil
 	}
 
 	// Single-byte keys

@@ -337,6 +337,16 @@ func pickLanguage() string {
 	langs := []string{"EN", "RU"}
 	sel := 0
 
+	kernel32, _ := loadKernel32()
+
+	// Enter raw mode
+	var oldMode uint32
+	if m, err := getConsoleMode(kernel32); err == nil {
+		oldMode = m
+		_ = setConsoleModeRaw(kernel32)
+	}
+	defer restoreConsoleMode(kernel32, oldMode)
+
 	// Hide cursor while selecting
 	fmt.Print("\033[?25l")
 	defer fmt.Print("\033[?25h")
@@ -966,6 +976,16 @@ func cmdResetBranch(branch string) {
 	opts := []string{"No", "Yes"}
 	sel := 0 // default: No (safe)
 
+	kernel32, _ := loadKernel32()
+
+	// Enter raw mode
+	var oldMode uint32
+	if m, err := getConsoleMode(kernel32); err == nil {
+		oldMode = m
+		_ = setConsoleModeRaw(kernel32)
+	}
+	defer restoreConsoleMode(kernel32, oldMode)
+
 	fmt.Print("\033[?25l")
 	defer fmt.Print("\033[?25h")
 
@@ -1116,6 +1136,16 @@ func cmdMigration(targetBranch string, sourceBranch string) {
 	// ── Arrow-key Yes / No confirmation ─────────────────────────────────
 	opts := []string{"No", "Yes"}
 	sel := 0 // default: No (safe)
+
+	kernel32, _ := loadKernel32()
+
+	// Enter raw mode
+	var oldMode uint32
+	if m, err := getConsoleMode(kernel32); err == nil {
+		oldMode = m
+		_ = setConsoleModeRaw(kernel32)
+	}
+	defer restoreConsoleMode(kernel32, oldMode)
 
 	fmt.Print("\033[?25l")
 	defer fmt.Print("\033[?25h")
@@ -1406,6 +1436,16 @@ func cmdRestore(name string) {
 	// Arrow-key confirmation
 	opts := []string{"No", "Yes"}
 	sel := 0
+
+	kernel32, _ := loadKernel32()
+
+	// Enter raw mode
+	var oldMode uint32
+	if m, err := getConsoleMode(kernel32); err == nil {
+		oldMode = m
+		_ = setConsoleModeRaw(kernel32)
+	}
+	defer restoreConsoleMode(kernel32, oldMode)
 
 	fmt.Print("\033[?25l")
 	defer fmt.Print("\033[?25h")
@@ -2294,6 +2334,17 @@ func parseLastPage(response string) int {
 
 func pickChoice(options []string) int {
 	sel := 0
+
+	kernel32, _ := loadKernel32()
+
+	// Enter raw mode
+	var oldMode uint32
+	if m, err := getConsoleMode(kernel32); err == nil {
+		oldMode = m
+		_ = setConsoleModeRaw(kernel32)
+	}
+	defer restoreConsoleMode(kernel32, oldMode)
+
 	fmt.Print("\033[?25l")
 	defer fmt.Print("\033[?25h")
 
@@ -4123,6 +4174,23 @@ func dispatch(args []string) {
 		}
 		cmdRoast(repo, n, model, lang)
 
+	case "connect":
+		token := ""
+		for i, a := range args[1:] {
+			if a == "--token" && i+1 < len(args[1:]) {
+				token = args[i+2]
+			} else if strings.HasPrefix(a, "--token=") {
+				token = strings.TrimPrefix(a, "--token=")
+			}
+		}
+		cmdConnect(token)
+
+	case "sync":
+		cmdSync()
+
+	case "team":
+		cmdTeam()
+
 	default:
 		rePush := regexp.MustCompile(`^push=(.+)$`)
 		rePull := regexp.MustCompile(`^pull~(.+)$`)
@@ -4434,4 +4502,306 @@ func enableWindowsANSI() error {
 		return err
 	}
 	return setConsoleMode(kernel32)
+}
+
+// ─────────────────────────────────────────────
+// GittySync integration commands
+// ─────────────────────────────────────────────
+
+const (
+	gittySyncURL    = "https://tzjktripdkuqhaqehxxz.supabase.co"
+	gittySyncAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR6amt0cmlwZGt1cWhhcWVoeHh6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzNjQ4OTgsImV4cCI6MjA5MTk0MDg5OH0.jcKRnTgw7JwDKYbyDYqfajSkkikzPHTZ5Yj09KxWfVc"
+)
+
+func gittySyncTokenPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".gitty", "token")
+}
+
+func gittySyncLoadToken() string {
+	data, err := os.ReadFile(gittySyncTokenPath())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func gittySyncSaveToken(token string) error {
+	dir := filepath.Dir(gittySyncTokenPath())
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(gittySyncTokenPath(), []byte(token+"\n"), 0600)
+}
+
+// gittySyncDo performs an authenticated request to the GittySync REST API.
+func gittySyncDo(method, path string, body interface{}) (*http.Response, error) {
+	token := gittySyncLoadToken()
+
+	var reqBody *bytes.Buffer
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		reqBody = bytes.NewBuffer(b)
+	} else {
+		reqBody = bytes.NewBuffer(nil)
+	}
+
+	req, err := http.NewRequest(method, gittySyncURL+path, reqBody)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("apikey", gittySyncAnonKey)
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	return client.Do(req)
+}
+
+// cmdConnect saves a workspace token so subsequent commands are authenticated.
+func cmdConnect(token string) {
+	if token == "" {
+		fail("Token required.")
+		hint("Usage: gitty connect --token <TOKEN>")
+		hint("Get a token from your profile at https://gittysync.app/app/profile")
+		os.Exit(1)
+	}
+
+	// Validate the token by calling the verify Edge Function.
+	req, err := http.NewRequest("POST", gittySyncURL+"/functions/v1/verify-token", strings.NewReader(`{}`))
+	if err == nil {
+		req.Header.Set("apikey", gittySyncAnonKey)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			fail("Could not reach GittySync: " + err.Error())
+			proxyHint()
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			fail("Token validation failed (HTTP " + strconv.Itoa(resp.StatusCode) + ").")
+			hint("Make sure the token is correct and not revoked.")
+			os.Exit(1)
+		}
+	}
+
+	if err := gittySyncSaveToken(token); err != nil {
+		fail("Could not save token: " + err.Error())
+		os.Exit(1)
+	}
+	success("Token saved to " + gittySyncTokenPath())
+	info("This machine is now connected to your GittySync workspace.")
+	hint("Run 'gitty sync' to pull your team's aliases and policies.")
+}
+
+// syncResponse is the shape returned by the sync Edge Function.
+type syncResponse struct {
+	Aliases   []struct {
+		Name    string `json:"name"`
+		Command string `json:"command"`
+	} `json:"aliases"`
+	Policies []struct {
+		Branch    string `json:"branch"`
+		Rule      string `json:"rule"`
+		Message   string `json:"message"`
+	} `json:"policies"`
+}
+
+// cmdSync pulls team aliases and policies from GittySync and applies them to git config.
+func cmdSync() {
+	token := gittySyncLoadToken()
+	if token == "" {
+		fail("Not connected. Run 'gitty connect --token <TOKEN>' first.")
+		os.Exit(1)
+	}
+
+	resp, err := http.NewRequest("GET", gittySyncURL+"/functions/v1/team-config", nil)
+	if err != nil {
+		fail("Request error: " + err.Error())
+		os.Exit(1)
+	}
+	resp.Header.Set("apikey", gittySyncAnonKey)
+	resp.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	httpResp, err := client.Do(resp)
+	if err != nil {
+		fail("Could not reach GittySync: " + err.Error())
+		proxyHint()
+		os.Exit(1)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode == 401 {
+		fail("Unauthorized. Your token may be expired or revoked.")
+		hint("Run 'gitty connect --token <NEW_TOKEN>' to re-authenticate.")
+		os.Exit(1)
+	}
+	if httpResp.StatusCode != 200 {
+		fail("Sync failed (HTTP " + strconv.Itoa(httpResp.StatusCode) + ").")
+		os.Exit(1)
+	}
+
+	var data syncResponse
+	if err := json.NewDecoder(httpResp.Body).Decode(&data); err != nil {
+		fail("Could not parse sync response: " + err.Error())
+		os.Exit(1)
+	}
+
+	// Apply git aliases
+	aliasCount := 0
+	for _, a := range data.Aliases {
+		if a.Name == "" || a.Command == "" {
+			continue
+		}
+		if _, err := runSilent("git", "config", "--global", "alias."+a.Name, a.Command); err == nil {
+			aliasCount++
+		}
+	}
+
+	if aliasCount > 0 {
+		success(fmt.Sprintf("Applied %d alias(es) to global git config.", aliasCount))
+	} else {
+		info("No aliases to apply.")
+	}
+
+	if len(data.Policies) > 0 {
+		info(fmt.Sprintf("%d branch policy rule(s) active on this workspace.", len(data.Policies)))
+		for _, p := range data.Policies {
+			fmt.Printf("  %s%-20s%s %s%s%s\n", colorCyan, p.Branch, colorReset, colorDim, p.Rule, colorReset)
+		}
+	}
+	success("Sync complete.")
+}
+
+// teamMember is one entry from the team-members Edge Function.
+type teamMember struct {
+	ID       string `json:"id"`
+	Email    string `json:"email"`
+	FullName string `json:"full_name"`
+	Role     string `json:"role"`
+}
+
+// teamActivity is one entry from the team-activity Edge Function.
+type teamActivity struct {
+	Action    string `json:"action"`
+	Branch    string `json:"branch"`
+	Source    string `json:"source"`
+	Message   string `json:"message"`
+	CreatedAt string `json:"created_at"`
+}
+
+type teamInfoResponse struct {
+	TeamName string         `json:"team_name"`
+	Members  []teamMember   `json:"members"`
+	Activity []teamActivity `json:"activity"`
+}
+
+// cmdTeam shows team members and recent activity.
+func cmdTeam() {
+	token := gittySyncLoadToken()
+	if token == "" {
+		fail("Not connected. Run 'gitty connect --token <TOKEN>' first.")
+		os.Exit(1)
+	}
+
+	req, err := http.NewRequest("GET", gittySyncURL+"/functions/v1/team-info", nil)
+	if err != nil {
+		fail("Request error: " + err.Error())
+		os.Exit(1)
+	}
+	req.Header.Set("apikey", gittySyncAnonKey)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	httpResp, err := client.Do(req)
+	if err != nil {
+		fail("Could not reach GittySync: " + err.Error())
+		proxyHint()
+		os.Exit(1)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode == 401 {
+		fail("Unauthorized. Run 'gitty connect --token <TOKEN>' to re-authenticate.")
+		os.Exit(1)
+	}
+	if httpResp.StatusCode != 200 {
+		fail("Could not fetch team info (HTTP " + strconv.Itoa(httpResp.StatusCode) + ").")
+		os.Exit(1)
+	}
+
+	var data teamInfoResponse
+	if err := json.NewDecoder(httpResp.Body).Decode(&data); err != nil {
+		fail("Could not parse team response: " + err.Error())
+		os.Exit(1)
+	}
+
+	teamName := data.TeamName
+	if teamName == "" {
+		teamName = "Your team"
+	}
+	fmt.Printf("\n%s%s%s\n\n", colorBold, teamName, colorReset)
+
+	// Members table
+	fmt.Printf("%sMEMBERS%s\n", colorDim, colorReset)
+	for _, m := range data.Members {
+		name := m.FullName
+		if name == "" {
+			name = m.Email
+		}
+		fmt.Printf("  %s%-30s%s %s%s%s\n", colorGreen, name, colorReset, colorDim, m.Role, colorReset)
+	}
+
+	if len(data.Activity) == 0 {
+		fmt.Println()
+		info("No recent activity.")
+		return
+	}
+
+	// Recent activity
+	fmt.Printf("\n%sRECENT ACTIVITY%s\n", colorDim, colorReset)
+	shown := data.Activity
+	if len(shown) > 10 {
+		shown = shown[:10]
+	}
+	for _, a := range shown {
+		ts := a.CreatedAt
+		if t, err := time.Parse(time.RFC3339, a.CreatedAt); err == nil {
+			diff := time.Since(t)
+			switch {
+			case diff < time.Minute:
+				ts = fmt.Sprintf("%ds ago", int(diff.Seconds()))
+			case diff < time.Hour:
+				ts = fmt.Sprintf("%dm ago", int(diff.Minutes()))
+			case diff < 24*time.Hour:
+				ts = fmt.Sprintf("%dh ago", int(diff.Hours()))
+			default:
+				ts = t.Format("Jan 2")
+			}
+		}
+		branch := ""
+		if a.Branch != "" {
+			branch = " " + colorCyan + a.Branch + colorReset
+		}
+		msg := ""
+		if a.Message != "" {
+			msg = " " + colorDim + a.Message + colorReset
+		}
+		fmt.Printf("  %s%-8s%s %-10s%s%s  %s%s%s\n",
+			colorCyan, a.Source, colorReset,
+			a.Action,
+			branch, msg,
+			colorDim, ts, colorReset,
+		)
+	}
+	fmt.Println()
 }

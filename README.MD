@@ -34,6 +34,7 @@ git add . && git commit -m "update" && git push origin main
 ```sh
 gitty up
 ```
+![gitty up](https://vhs.charm.sh/vhs-5Gv6j5LijbLQsP6VEWQEXB.gif)
 
 No runtime dependencies. No config files. No learning curve.
 
@@ -51,6 +52,8 @@ Git's raw interface is powerful, but verbose. Every day you type the same sequen
 - **Safe by default** — `gitty pull` adds only missing files; destructive ops require explicit flags
 - **GitHub-native** — create repos, push with sharing links, manage branches via `gh` integration
 - **Chainable** — `gitty up --commit "hotfix" and push=staging --share`
+
+![demo](https://vhs.charm.sh/vhs-3otaia3VUq2ZVwUVoh90D6.gif)
 
 ## Installation
 
@@ -99,6 +102,7 @@ gitty up
 # 5) With a custom commit message
 gitty up --commit "feat: initial CLI"
 ```
+[gitty push](https://vhs.charm.sh/vhs-gNhrn6Zbp8oP5MODwZaxR.gif)
 
 ## Syntax shortcuts
 
@@ -272,6 +276,7 @@ git add . && git commit -m "update" && git push origin main
 ```sh
 gitty up
 ```
+![gitty up](https://vhs.charm.sh/vhs-5Gv6j5LijbLQsP6VEWQEXB.gif)
 
 Никаких зависимостей. Никаких конфигов. Никакой кривой обучения.
 
@@ -289,6 +294,8 @@ gitty up
 - **Безопасен по умолчанию** — `gitty pull` добавляет только недостающие файлы; разрушительные операции требуют явных флагов
 - **GitHub-native** — создать репо, запушить со ссылкой, управлять ветками через `gh`
 - **Цепочки команд** — `gitty up --commit "hotfix" and push=staging --share`
+
+![demo](https://vhs.charm.sh/vhs-3otaia3VUq2ZVwUVoh90D6.gif)
 
 ## Установка
 
@@ -337,6 +344,7 @@ gitty up
 # 5) С явным сообщением коммита
 gitty up --commit "feat: initial CLI"
 ```
+[gitty push](https://vhs.charm.sh/vhs-gNhrn6Zbp8oP5MODwZaxR.gif)
 
 ## Сокращения синтаксиса
 
